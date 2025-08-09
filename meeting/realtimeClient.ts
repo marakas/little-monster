@@ -26,11 +26,87 @@ wsSession.on("audio", (evt) => {
   if (playCb) playCb(evt.data);
 });
 
+let _rawSend: ((evt: any) => void) | null = null;
+let _warnedOnce = false;
+
+function resolveRawSender() {
+  const s: any = wsSession as any;
+
+  // Try to grab a websocket-like thing
+  const ws =
+    s.socket || s.ws || s._socket || s._transport?.socket || s.client?.socket;
+
+  if (ws && typeof ws.send === "function") {
+    _rawSend = (evt: any) =>
+      ws.send(typeof evt === "string" ? evt : JSON.stringify(evt));
+    return;
+  }
+
+  // Try internal helpers some builds expose
+  const fn = s.send ?? s.sendEvent ?? s._transport?.send;
+  if (typeof fn === "function") {
+    _rawSend = (evt: any) => fn.call(s, evt);
+    return;
+  }
+
+  _rawSend = null; // not available on this build
+}
+
+function sessionSend(evt: any) {
+  if (_rawSend) {
+    try {
+      _rawSend(evt);
+    } catch (_) {
+      /* swallow */
+    }
+    return;
+  }
+  if (!_warnedOnce) {
+    console.warn(
+      "Realtime: control events disabled on this SDK build (audio streaming still works)."
+    );
+    _warnedOnce = true;
+  }
+}
+
+/* ---------- INIT: configure (best-effort) ---------- */
 export async function initRealtime(apiKey: string) {
   await wsSession.connect({ apiKey });
+
+  // Resolve the control sender once
+  resolveRawSender();
+
+  sessionSend({
+    type: "session.update",
+    session: {
+      turn_detection: {
+        type: "server",
+        threshold: 0.5,
+        silence: { min_ms: 400 },
+      },
+      input_audio_format: { type: "pcm16", sample_rate: 16000, channels: 1 },
+    },
+  });
+
   wsSession.on("audio", (event) => {
     console.log("received audio chunk:", event.data);
   });
+}
+
+/* ---------- SILENCE-DRIVEN COMMIT (no-ops if control path unavailable) ---------- */
+let silenceTimer: NodeJS.Timeout | null = null;
+function scheduleCommit() {
+  if (silenceTimer) clearTimeout(silenceTimer);
+  silenceTimer = setTimeout(() => {
+    // Only try to commit if we have a control sender
+    if (_rawSend) {
+      sessionSend({ type: "input_audio_buffer.commit" });
+      sessionSend({
+        type: "response.create",
+        response: { modalities: ["audio"] },
+      });
+    }
+  }, 600);
 }
 
 /**
@@ -40,11 +116,11 @@ export async function initRealtime(apiKey: string) {
  */
 export function sendRealtimeAudio(data: ArrayBuffer, inputSampleRate = 16000) {
   if (inputSampleRate === 16000) {
-    // zero-copy slice
     const buf = Buffer.from(data);
     wsSession.sendAudio(
       buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
     );
+    scheduleCommit(); // 👈 add this
     return;
   }
 
@@ -85,24 +161,6 @@ export function sendRealtimeAudio(data: ArrayBuffer, inputSampleRate = 16000) {
         )
       );
     }
+    scheduleCommit(); // 👈 commit after the resampled burst finishes
   });
-}
-
-// (optional) simple linear upsampler kept as utility
-export function upsamplePCM16Linear(
-  input: Int16Array,
-  inputRate = 16000,
-  outputRate = 48000
-): Int16Array {
-  const factor = outputRate / inputRate;
-  const outputLength = Math.floor(input.length * factor);
-  const output = new Int16Array(outputLength);
-  for (let i = 0; i < outputLength; i++) {
-    const pos = i / factor;
-    const li = Math.floor(pos);
-    const ri = Math.min(li + 1, input.length - 1);
-    const w = pos - li;
-    output[i] = (1 - w) * input[li] + w * input[ri];
-  }
-  return output;
 }

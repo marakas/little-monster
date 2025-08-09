@@ -222,20 +222,12 @@ async function implementBrowserSideAudioCapture(page: Page, platform: string) {
       await page.exposeFunction(
         "handleRealAudioChunk",
         (audioChunk: number[], browserSampleRate: number) => {
+          const uint8 = new Uint8Array(audioChunk);
+          // ✅ tell the sender the true rate so it resamples 48k -> 16k
+          sendRealtimeAudio(uint8.buffer, browserSampleRate);
           console.log(
-            `🎵 Fallback: Received audio chunk from browser: ${audioChunk.length} bytes, browser rate: ${browserSampleRate} Hz, target rate: ${targetSampleRate} Hz`
+            `✅ Fallback: Sent ${uint8.byteLength} bytes to Realtime @ ${browserSampleRate} Hz`
           );
-          try {
-            const uint8Array = new Uint8Array(audioChunk);
-            // Use target sample rate for platform consistency
-            //batchAudioChunk(uint8Array, targetSampleRate);
-            sendRealtimeAudio(uint8Array.buffer);
-            console.log(
-              `✅ Fallback: Audio chunk sent to transcription system with ${targetSampleRate} Hz`
-            );
-          } catch (error) {
-            console.log(`❌ Fallback: Error processing audio chunk:`, error);
-          }
         }
       );
       console.log(
@@ -589,72 +581,32 @@ export async function startMeetBot(
     let debugCounter = 0;
 
     onRealtimeAudio(async (ab: ArrayBuffer) => {
-      const rawBuffer = Buffer.from(ab);
-      const debugId = String(debugCounter++).padStart(4, "0");
+      const int16 = new Int16Array(ab);
+      const modelOutRate = 24000; // ← key: model replies are 24 kHz
 
-      // Save the original model chunk as 24 kHz
-      const rawPath = path.join("recordings", `input_${debugId}_24k.wav`);
-      writeWavFile(rawBuffer, 24000, rawPath);
-
-      // Upsample 24k → 48k for Meet injection
-      const pcm48 = await upsamplePCM16Buffer(rawBuffer, 24000, 48000);
-
-      const upsampledPath = path.join(
-        "recordings",
-        `output_${debugId}_48k.wav`
+      // (optional) debug wav
+      writeWavFile(
+        Buffer.from(int16.buffer, int16.byteOffset, int16.byteLength),
+        modelOutRate,
+        path.join(
+          "recordings",
+          `rt_reply_${Date.now()}_${modelOutRate / 1000}k.wav`
+        )
       );
-      writeWavFile(pcm48, 48000, upsampledPath);
 
-      // Inject to fake mic
-      const samples48 = new Int16Array(
-        pcm48.buffer,
-        pcm48.byteOffset,
-        pcm48.length / 2
+      // Tell the browser the *correct* source rate
+      await state.page!.evaluate(
+        ({ rate, samples }) => (window as any).enqueuePcmAt(rate, samples),
+        { rate: modelOutRate, samples: Array.from(int16) }
       );
-      const CHUNK_SIZE = 4096;
-      for (let i = 0; i < samples48.length; i += CHUNK_SIZE) {
-        const chunk = Array.from(samples48.subarray(i, i + CHUNK_SIZE));
-        await page.evaluate((c) => (window as any).enqueuePcm(c), chunk);
-      }
 
-      const min = samples48.reduce((a, b) => Math.min(a, b), Infinity);
-      const max = samples48.reduce((a, b) => Math.max(a, b), -Infinity);
-      console.log(`🔊 48k PCM range ${min}…${max} | len=${samples48.length}`);
+      console.log(`🔊 injected ${int16.length} samples @ ${modelOutRate} Hz`);
     });
-
-    /* onRealtimeAudio((ab: ArrayBuffer) => {
-      const samples = Array.from(new Int16Array(ab)).map((s) =>
-        Math.max(-32768, Math.min(32767, s))
-      );
-      const min = Math.min(...samples);
-      const max = Math.max(...samples);
-      console.log(`🔊 Sample range: ${min} to ${max}`);
-      console.log(`🔁 Injecting ${samples.length} samples to fake mic`);
-
-      // Send received audio
-      page.evaluate((chunk) => (window as any).enqueuePcm(chunk), samples);
-
-      // 🧪 Optional: inject a beep if the audio is silent or tiny
-      if (samples.length < 1000) {
-        console.log("🧪 Injecting test beep for playback confirmation");
-
-        const toneFreq = 440; // A4 pitch
-        const sampleRate = 16000;
-        const durationSeconds = 0.5;
-        const tone = Array.from(
-          { length: sampleRate * durationSeconds },
-          (_, i) => Math.sin((2 * Math.PI * toneFreq * i) / sampleRate) * 32767
-        );
-
-        page.evaluate((chunk) => (window as any).enqueuePcm(chunk), tone);
-      }
-    }); */
-
     state.page = page;
 
-    state.page.on("console", (msg) => {
+    /*state.page.on("console", (msg) => {
       console.log("🧠 Browser log:", msg.text());
-    });
+    });*/
 
     // ✅ Wait for browser to be fully ready
     console.log("⏳ Waiting for browser to be fully initialized...");
@@ -796,8 +748,14 @@ export async function startMeetBot(
         "notifications",
       ]);
     }
-    await page.goto(transformedMeetUrl, { waitUntil: "networkidle2" });
-    await delay(); // short extra delay for UI to load
+    await page.setDefaultNavigationTimeout(120_000);
+    await page.goto(transformedMeetUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 90_000,
+    });
+    // optional: give SPA a moment, then proceed
+    await page.waitForSelector("body", { timeout: 60_000 });
+    //await delay(); // short extra delay for UI to load
 
     // ✅ Route to appropriate joining logic based on platform
     if (meetingPlatform === "google-meet") {
@@ -823,17 +781,17 @@ export async function startMeetBot(
     monitorKickout(page);
 
     console.log("📡 Bot is now listening to the meeting...");
-    await delay();
-    const testBeep = Array.from(
-      { length: 16000 },
-      (_, i) => Math.sin((2 * Math.PI * 440 * i) / 16000) * 32767
+    //await delay();
+    const sr = 48000,
+      f = 440,
+      dur = 0.6;
+    const tone48 = Array.from({ length: Math.floor(sr * dur) }, (_, i) =>
+      Math.round(Math.sin((2 * Math.PI * f * i) / sr) * 32767)
     );
     await state.page.evaluate(
-      (chunk) => (window as any).enqueuePcm(chunk),
-      testBeep
+      ({ rate, samples }) => (window as any).enqueuePcmAt(rate, samples),
+      { rate: sr, samples: tone48 }
     );
-    console.log("test beep");
-    // Modal suppression removed
 
     // ✅ **Auto-stop the bot after the maximum duration**
     state.stopTimeout = setTimeout(() => {
