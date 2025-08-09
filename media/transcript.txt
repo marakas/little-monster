@@ -1,0 +1,101 @@
+interviewer:
+Let’s design a system where users can request new debit cards through the app. These are fulfilled by a third-party manufacturer, and users should be able to track the status and activate the card by paying and entering a PIN. Go ahead and walk me through your design.
+
+⸻
+
+interviewee:
+Thanks. Before jumping into the design, I’d like to clarify a few things:
+	•	Is the user always an existing customer, or do we need to support onboarding too?
+	•	Is the manufacturer a single partner or are there multiple we might route to?
+	•	How sensitive is the PIN activation step — is it regulated or more of a soft check?
+	•	Should the user be able to cancel or modify a card request after it’s submitted?
+	•	Finally, do we expect this to run globally or only in one region?
+
+⸻
+
+interviewer:
+Good questions.
+	•	The user is already a Revolut customer and has passed KYC.
+	•	For now, it’s a single manufacturer.
+	•	PIN entry is required for security but is not regulated.
+	•	No cancellations needed for now.
+	•	Initially UK only.
+
+⸻
+
+interviewee:
+Perfect, that simplifies things. I’ll start by breaking down the functional requirements:
+	1.	Allow a verified user to request a new debit card through the app.
+	2.	Send the card request to a third-party manufacturer securely.
+	3.	Receive asynchronous status updates (e.g. card printed, shipped).
+	4.	Allow the user to check the real-time status of their card.
+	5.	Allow the user to activate the card by entering a PIN and completing a payment.
+
+And the non-functional requirements:
+	•	Security: Protect sensitive data, authenticate all calls, validate webhook integrity.
+	•	Resilience: Handle spikes in traffic and downstream failures gracefully.
+	•	Auditability: Track every step for compliance and debugging.
+	•	Latency: User-facing actions should respond quickly.
+	•	Scalability: Must support up to 2 million users, with potential spikes of 100k/day.
+	•	Monitoring: Track metrics and alert on delays, failures, or anomalies.
+
+⸻
+
+interviewee:
+Now onto the system design.
+
+The flow begins in the Client app, where the user initiates a new card request. This hits our API Server through a Load Balancer, calling something like POST /newCard. The user is already authenticated, so we validate the payload and user status.
+
+The API Server writes the request to a Postgres database, storing request_id, user_id, address, status, and timestamps. The status can be NEW, IN_PROGRESS, SHIPPED, or DONE.
+
+Next, we forward the job to an App Server or background worker that integrates with the Manufacturer API. If we need better decoupling or scaling, we can drop these requests onto an SQS queue or Kafka topic and process them asynchronously.
+
+The manufacturer acknowledges receipt, and later, when the card is ready or shipped, they notify us via Webhook callbacks. These callbacks are secured with IP allowlisting and a rotating shared secret — 3 to 6 values rotated periodically, with HMAC verification.
+
+Each webhook updates the card status in the DB — for example, SHIPPED.
+
+On the user side, they can check progress with GET /cardStatus, which queries their most recent request using user_id. For performance, especially during polling bursts, we serve reads from replicated read-only DB nodes.
+
+Once the user receives the card, they activate it in the app. This involves entering a PIN and completing a payment. The client submits this securely via POST /activateCard, and the API validates both. If successful, the card status is marked DONE.
+
+For observability, I’d log all transitions with structured logs, trace IDs, and store audit trails for later review. I’d also expose Prometheus metrics and set up alerts for stuck states (e.g., IN_PROGRESS for too long) and failed webhook deliveries.
+
+⸻
+
+interviewer:
+Is that everything?
+
+⸻
+
+interviewee:
+Yes, that covers the full flow end to end.
+
+⸻
+
+interviewer:
+Okay. Imagine the third-party manufacturer suffers a data leak — names, addresses, possibly even shipping info are exposed. How would you deal with it?
+
+⸻
+
+interviewee:
+That’s a critical incident. I’d approach it in three phases:
+
+1. Immediate response:
+	•	Cut off integration immediately — disable outgoing card requests and webhook intake.
+	•	Revoke API keys, secrets, and webhook tokens.
+	•	Notify internal stakeholders and trigger the incident response plan.
+	•	Begin forensic investigation in collaboration with the manufacturer.
+
+2. Containment and mitigation:
+	•	Use logs to identify affected users and flag those accounts.
+	•	Notify users following regulatory requirements like GDPR.
+	•	Reissue cards where necessary and offer fraud monitoring or compensation.
+	•	Document exposure scope and timeline precisely.
+
+3. Long-term hardening:
+	•	Move to envelope encryption — encrypt PII before sending to the manufacturer, so they can’t decrypt it outside their secure runtime.
+	•	Enforce stricter SLAs, security audits, and breach response terms.
+	•	Consider switching to a more secure vendor if needed.
+	•	Conduct a full postmortem and update internal processes to close any gaps.
+
+This would be handled with high urgency and transparency to protect user trust and comply with legal obligations.

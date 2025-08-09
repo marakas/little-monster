@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.*
+recordings/
+*.log
+*.wav
+*.webm
+debug_output.wav
+*.pem
+.DS_Store

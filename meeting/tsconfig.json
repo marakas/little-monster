@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "lib": ["dom"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "moduleResolution": "node"
+  }
+}

@@ -1,0 +1,6 @@
+- The user should be able to easily request a new card through the app.
+- New cards are issued by a 3rd party manufacturer. This must be managed securely.
+- The user should be able to see the status of the order through the app.
+- The new card can be activated by paying and entering the PIN number once.
+- The most important thing is fault tolerance, we are a Bank so heavily regulated and must not lose any information.
+- We want to see the interviewee handle the case when there is a massive burst of traffic after re-requesting new cards following a data breach scenario.
