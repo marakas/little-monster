@@ -13,6 +13,8 @@ import {
 import state from "./state.ts";
 import { stopMeetBot } from "./stop_meet_bot.ts";
 import { type MeetingPlatform } from "./utils.ts";
+const LOCAL_MODE =
+  process.env.LOCAL_MODE === "1" || process.env.LOCAL_MODE === "true";
 
 const EXCHANGE_NAME = "meet-bot-exchange";
 const START_QUEUE = "start-meetings";
@@ -150,11 +152,7 @@ async function setupConsumers(channel: amqp.Channel) {
           } platform...`
         );
         startHeartbeatUpdater(meetingId);
-        startMeetBot(
-          normalizedMeetingUrl,
-          meetingId,
-          platform as MeetingPlatform
-        ).catch((err) => {
+        startMeetBot(normalizedMeetingUrl, meetingId).catch((err) => {
           console.error("❌ Meetbot error:", err);
           stopMeetBot();
         });
@@ -257,8 +255,59 @@ process.on("SIGINT", async () => {
   }
 });
 
-connectToMessageBroker(setupConsumers).then(() => {
-  console.log("[Agent] Initial RabbitMQ connection attempt complete.");
+// Only connect to RabbitMQ when NOT in local mode
+if (LOCAL_MODE) {
+  console.log("[Local] LOCAL_MODE=1 → skipping RabbitMQ connection.");
+} else {
+  connectToMessageBroker(setupConsumers).then(() => {
+    console.log("[Agent] Initial RabbitMQ connection attempt complete.");
+  });
+}
+
+// Simple local endpoints (bypass MQ)
+app.get("/local/status", (_req, res) => {
+  res.json({
+    running: state.isBotRunning,
+    paused: state.isBotPaused,
+    meetingId: state.meetingId,
+  });
+});
+
+app.post("/local/start", async (req, res) => {
+  const { meetingId, meetUrl } = req.body || {};
+  if (!meetingId || !meetUrl)
+    return res.status(400).json({ error: "meetingId and meetUrl required" });
+  if (state.isBotRunning)
+    return res.status(409).json({ error: "bot already running" });
+
+  try {
+    // If you kept the Meet-only version: two args
+    await startMeetBot(meetUrl, meetingId);
+    // If you DIDN’T switch meetbot.ts, use this instead:
+    // await startMeetBot(meetUrl, meetingId, "google-meet" as MeetingPlatform);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("startMeetBot failed:", e);
+    return res.status(500).json({ error: "failed to start" });
+  }
+});
+
+app.post("/local/stop", async (req, res) => {
+  if (!state.isBotRunning) return res.json({ ok: true, note: "not running" });
+  await stopMeetBot();
+  return res.json({ ok: true });
+});
+
+app.post("/local/pause", async (_req, res) => {
+  if (!state.isBotRunning || state.isBotPaused) return res.json({ ok: true });
+  await pauseMeetBot();
+  return res.json({ ok: true });
+});
+
+app.post("/local/resume", async (_req, res) => {
+  if (!state.isBotRunning || !state.isBotPaused) return res.json({ ok: true });
+  await resumeMeetBot();
+  return res.json({ ok: true });
 });
 
 const PORT = 3000;
