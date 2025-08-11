@@ -676,14 +676,14 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
     throw error;
   }
 
-  await delay(10000); // Wait for meeting acceptance
+  //await delay(10000); // Wait for meeting acceptance
 
   // ✅ **POST-JOIN MICROPHONE VERIFICATION & MUTING** (Safety net)
-  console.log(
+  /* console.log(
     "🎤 Verifying and muting microphone after joining meeting (safety net)..."
   );
   await delay(3000); // Wait for meeting UI to stabilize
-
+ */
   const postJoinMicSelectors = [
     // ✅ **EXACT SELECTORS FROM USER'S HTML** (highest priority)
     "div[jsname='hw0c9'][aria-label*='Turn off microphone']", // EXACT match from user's inspect
@@ -713,9 +713,9 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
     try {
       const micButton = await page.$(selector);
       if (micButton) {
-        console.log(
+        /*  console.log(
           `🔍 Found post-join microphone button with selector: ${selector}`
-        );
+        ); */
 
         const buttonState = await page.evaluate((el: Element) => {
           const element = el as HTMLElement;
@@ -731,11 +731,11 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
           };
         }, micButton);
 
-        console.log(
+        /* console.log(
           `📊 Post-join microphone button state:`,
           JSON.stringify(buttonState, null, 2)
         );
-
+ */
         // ✅ **INTELLIGENT DEVICE PROBLEM FILTERING** in post-join too
         const hasDeviceProblemText =
           buttonState.ariaLabel?.toLowerCase().includes("problem") ||
@@ -749,16 +749,17 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
           buttonState.ariaLabel?.toLowerCase().includes("microphone"); // Clearly mic-related
 
         if (hasDeviceProblemText && !hasValidMicStructure) {
-          console.log(
+          /*  console.log(
             `⚠️ Skipping post-join device problem button: "${buttonState.ariaLabel}" - not a mic control`
-          );
+          ); */
           continue;
         } else if (hasDeviceProblemText && hasValidMicStructure) {
-          console.log(
+          /* console.log(
             `🔧 Post-join Docker environment: Found mic control with device problem label - will attempt to use it`
           );
           console.log(`   → Selector: ${selector}`);
-          console.log(`   → Label: "${buttonState.ariaLabel}"`);
+          consol e.log(`   → Label: "${buttonState.ariaLabel}"`);
+          */
         }
 
         // Check data-is-muted attribute first (most reliable)
@@ -798,11 +799,11 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
         );
 
         if (isMicMuted) {
-          console.log("✅ Microphone is properly muted in meeting.");
+          //  console.log("✅ Microphone is properly muted in meeting.");
           postJoinMicMuted = true;
           break;
         } else if (isMicOn) {
-          console.log("⚠️ Microphone is ON in meeting, muting now...");
+          //console.log("⚠️ Microphone is ON in meeting, muting now...");
           //await micButton.click();
           //await delay(1000);
           //console.log("✅ Microphone muted in meeting.");
