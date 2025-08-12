@@ -8,8 +8,11 @@ import { writeFileSync } from "fs";
 
 import {
   initRealtime,
+  isAgentSpeaking,
   onRealtimeAudio,
   sendRealtimeAudio,
+  sendUserText,
+  commitNow,
 } from "./realtimeClient.ts";
 import { upsamplePCM16Buffer, writeWavFile } from "./upsample.ts";
 
@@ -47,8 +50,8 @@ import { joinGoogleMeet } from "./platforms/joinGoogleMeet.ts";
 import { joinZoom } from "./platforms/joinZoom.ts";
 import { enableStreamingMic } from "./micStreaming.ts";
 
-let lastFlushTime = Date.now();
-let lastSpeechTime = Date.now();
+let wasSpeaking = false;
+let lastSpeechAt = Date.now();
 
 const recordingsDir = "./recordings";
 if (!fs.existsSync(recordingsDir)) {
@@ -152,58 +155,12 @@ function startAudioProcessing() {
       return;
     }
 
-    // Monitor stats and provide feedback
-    const stats = audioProcessor.getStats();
-
-    // Log stats with different frequencies based on buffer size
-    if (stats.bufferDurationMs > 8000) {
-      console.log(
-        `⚠️ Audio buffer growing: ${
-          stats.bufferDurationMs
-        }ms buffered, speech: ${
-          stats.isSpeechActive ? "YES" : "NO"
-        }, content: ${stats.speechRatio}, variance: ${stats.energyVariance}`
-      );
-    } else if (stats.bufferDurationMs > 1000) {
-      console.log(
-        `🎤 Audio status: ${stats.bufferDurationMs}ms buffered, speech: ${
-          stats.isSpeechActive ? "YES" : "NO"
-        }, content: ${stats.speechRatio}`
-      );
+    const silentForMs = Date.now() - lastSpeechAt;
+    if (wasSpeaking && silentForMs > 700) {
+      wasSpeaking = false;
+      commitNow(); // force a turn boundary if server VAD missed it
     }
-
-    // Buffer management with progressive warnings
-    if (stats.bufferDurationMs > 18000) {
-      // 18 seconds critical threshold
-      console.log(
-        "🚨 Critical buffer size reached, resetting to prevent memory issues..."
-      );
-      audioProcessor.reset();
-    } else if (stats.bufferDurationMs > 12000) {
-      // 12 seconds warning
-      console.log(
-        `⚠️ Large buffer detected (${stats.bufferDurationMs}ms) - checking for processing issues...`
-      );
-
-      // Force a processing attempt with relaxed criteria
-      const result = audioProcessor.processAudioChunk(
-        Buffer.alloc(0),
-        state.currentSpeaker || "Unknown",
-        false,
-        state.currentAudioSampleRate
-      );
-      if (result.shouldTranscribe && result.processedAudio.length > 0) {
-        console.log(`🔄 Forced processing: ${result.reason}`);
-        // Use the correct sample rate from state for forced processing
-        sendToWhisper(
-          result.processedAudio,
-          0,
-          false,
-          state.currentAudioSampleRate
-        );
-      }
-    }
-  }, 2000); // Check every 2 seconds for balanced monitoring
+  }, 200);
 
   console.log("✅ Enhanced audio processing started with buffer management");
 }
@@ -638,11 +595,35 @@ export async function startMeetBot(
       .format("s16le") // <-- RAW PCM, not WAV
       .on("error", (err) => console.error("FFmpeg Error:", err));
 
+    function chunkHasVoice16k(ab: ArrayBuffer): boolean {
+      // chunks are s16le mono @16k (from ffmpeg)
+      const v = new Int16Array(ab);
+      if (v.length === 0) return false;
+      let sum = 0,
+        n = 0;
+      // subsample to keep it cheap
+      for (let i = 0; i < v.length; i += 16) {
+        sum += v[i] * v[i];
+        n++;
+      }
+      const rms = Math.sqrt(sum / Math.max(1, n)); // 0..32767
+      return rms > 200; // tweak 120–300 if needed
+    }
+
     const toRealtime = new PassThrough();
     state.activeProcess.pipe(toRealtime).on("data", (chunk: Buffer) => {
-      // Force a real ArrayBuffer (copies once)
       const ab = new Uint8Array(chunk).buffer;
-      sendRealtimeAudio(ab, 16000);
+
+      const humanVoiced = chunkHasVoice16k(ab);
+      if (humanVoiced) {
+        wasSpeaking = true;
+        lastSpeechAt = Date.now();
+      }
+
+      // only feed model when *you* are speaking and the agent is not
+      if (humanVoiced && !isAgentSpeaking()) {
+        sendRealtimeAudio(ab, 16000);
+      }
     });
 
     // ✅ Enhanced recording setup with Docker compatibility and timeouts
@@ -782,6 +763,7 @@ export async function startMeetBot(
 
     console.log("📡 Bot is now listening to the meeting...");
     //await delay();
+    /*
     const sr = 48000,
       f = 440,
       dur = 0.6;
@@ -792,7 +774,11 @@ export async function startMeetBot(
       ({ rate, samples }) => (window as any).enqueuePcmAt(rate, samples),
       { rate: sr, samples: tone48 }
     );
-
+    */
+    // Kick off the interview via a hard-coded user message
+    sendUserText(
+      "Please begin the interview now by stating the scenario. Start with the simple web app to display cat pictures."
+    );
     // ✅ **Auto-stop the bot after the maximum duration**
     state.stopTimeout = setTimeout(() => {
       console.log(
