@@ -23,8 +23,8 @@ export async function enableStreamingMic(page: PPage) {
     let readPtr = 0; // fractional read pointer relative to 'base'
     let inputRate = DEFAULT_INPUT_RATE; // current enqueue sample rate
 
-    // Backpressure limit: keep at most ~5s of audio
-    const MAX_BUFFER_SECONDS = 5;
+    // Backpressure limit: keep at most ~30s of audio
+    const MAX_BUFFER_SECONDS = 30;
 
     // Public API: enqueue 48k Int16 by default
     (window as any).enqueuePcm = (s: number[]) => {

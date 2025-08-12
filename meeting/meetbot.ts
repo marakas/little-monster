@@ -217,7 +217,7 @@ async function implementBrowserSideAudioCapture(page: Page, platform: string) {
       `🎵 Setting up browser-side audio capture for ${platform} (target sample rate: ${targetSampleRate} Hz)`
     );
 
-    // ✅ **Expose handleRealAudioChunk to browser context** (check if not already exposed)
+    // ✅ send the audio to realtime api
     try {
       await page.exposeFunction(
         "handleRealAudioChunk",
