@@ -58,6 +58,21 @@ if (!fs.existsSync(recordingsDir)) {
   fs.mkdirSync(recordingsDir, { recursive: true });
 }
 
+function chunkHasVoice16k(ab: ArrayBuffer): boolean {
+  // chunks are s16le mono @16k (from ffmpeg)
+  const v = new Int16Array(ab);
+  if (v.length === 0) return false;
+  let sum = 0,
+    n = 0;
+  // subsample to keep it cheap
+  for (let i = 0; i < v.length; i += 16) {
+    sum += v[i] * v[i];
+    n++;
+  }
+  const rms = Math.sqrt(sum / Math.max(1, n)); // 0..32767
+  return rms > 200; // tweak 120–300 if needed
+}
+
 // Helper function to debug available elements
 async function debugAvailableElements(page: Page, stepName: string) {
   try {
@@ -594,21 +609,6 @@ export async function startMeetBot(
       .audioChannels(1)
       .format("s16le") // <-- RAW PCM, not WAV
       .on("error", (err) => console.error("FFmpeg Error:", err));
-
-    function chunkHasVoice16k(ab: ArrayBuffer): boolean {
-      // chunks are s16le mono @16k (from ffmpeg)
-      const v = new Int16Array(ab);
-      if (v.length === 0) return false;
-      let sum = 0,
-        n = 0;
-      // subsample to keep it cheap
-      for (let i = 0; i < v.length; i += 16) {
-        sum += v[i] * v[i];
-        n++;
-      }
-      const rms = Math.sqrt(sum / Math.max(1, n)); // 0..32767
-      return rms > 200; // tweak 120–300 if needed
-    }
 
     const toRealtime = new PassThrough();
     state.activeProcess.pipe(toRealtime).on("data", (chunk: Buffer) => {
