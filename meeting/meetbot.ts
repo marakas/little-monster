@@ -615,14 +615,10 @@ export async function startMeetBot(
       const ab = new Uint8Array(chunk).buffer;
 
       const humanVoiced = chunkHasVoice16k(ab);
-      if (humanVoiced) {
-        wasSpeaking = true;
-        lastSpeechAt = Date.now();
-      }
-
-      // only feed model when *you* are speaking and the agent is not
       if (humanVoiced && !isAgentSpeaking()) {
         sendRealtimeAudio(ab, 16000);
+        wasSpeaking = true; // only after we *actually* sent frames
+        lastSpeechAt = Date.now();
       }
     });
 

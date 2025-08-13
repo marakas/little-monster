@@ -27,6 +27,10 @@ const wsSession = new RealtimeSession(agent, {
   },
 });
 
+wsSession.on("error", (e) =>
+  console.error("Realtime session error:", JSON.stringify(e, null, 2))
+);
+
 let playCb: ((buffer: ArrayBuffer) => void) | undefined;
 export function onRealtimeAudio(cb: (buffer: ArrayBuffer) => void) {
   playCb = cb;
@@ -72,14 +76,6 @@ export async function initRealtime(apiKey: string) {
   await wsSession.connect({ apiKey });
 }
 
-export function commitNow() {
-  wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
-  wsSession.transport.sendEvent({
-    type: "response.create",
-    response: { modalities: ["audio"] },
-  });
-}
-
 /* ---------- SILENCE-DRIVEN COMMIT (no-ops if control path unavailable) ---------- */
 let silenceTimer: NodeJS.Timeout | null = null;
 function scheduleCommit() {
@@ -89,9 +85,38 @@ function scheduleCommit() {
     wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
     wsSession.transport.sendEvent({
       type: "response.create",
-      response: { modalities: ["audio"] },
+      response: { modalities: ["audio", "text"] },
     });
   }, 600);
+}
+
+const INPUT_RATE = 16000; // s16le mono
+const MIN_COMMIT_MS = 120; // a hair > 100ms server requirement
+const MIN_COMMIT_BYTES = Math.floor((INPUT_RATE * 2 * MIN_COMMIT_MS) / 1000);
+let bytesSinceCommit = 0;
+
+function canCommit() {
+  return bytesSinceCommit >= MIN_COMMIT_BYTES;
+}
+function resetCommitBudget() {
+  bytesSinceCommit = 0;
+}
+
+export function commitNow() {
+  if (!canCommit()) return; // ← prevents input_audio_buffer_commit_empty
+  wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
+  bytesSinceCommit = 0;
+}
+
+function bufferToArrayBuffer(buf: Buffer): ArrayBuffer {
+  const ab = new ArrayBuffer(buf.length);
+  new Uint8Array(ab).set(buf);
+  return ab;
+}
+
+function send16k(buf: Buffer) {
+  bytesSinceCommit += buf.length; // track bytes for commit guard
+  wsSession.sendAudio(bufferToArrayBuffer(buf));
 }
 
 /**
@@ -104,10 +129,7 @@ export function sendRealtimeAudio(data: ArrayBuffer, inputSampleRate = 16000) {
 
   if (inputSampleRate === 16000) {
     const buf = Buffer.from(data);
-    wsSession.sendAudio(
-      buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-    );
-    //scheduleCommit();
+    send16k(buf);
     return;
   }
 
@@ -130,23 +152,13 @@ export function sendRealtimeAudio(data: ArrayBuffer, inputSampleRate = 16000) {
     buffer = Buffer.concat([buffer, chunk]);
     while (buffer.length >= MAX_CHUNK_SIZE) {
       const piece = buffer.slice(0, MAX_CHUNK_SIZE);
-      wsSession.sendAudio(
-        piece.buffer.slice(
-          piece.byteOffset,
-          piece.byteOffset + piece.byteLength
-        )
-      );
+      send16k(piece);
       buffer = buffer.slice(MAX_CHUNK_SIZE);
     }
   });
   output.on("end", () => {
     if (buffer.length > 0) {
-      wsSession.sendAudio(
-        buffer.buffer.slice(
-          buffer.byteOffset,
-          buffer.byteOffset + buffer.byteLength
-        )
-      );
+      send16k(buffer);
     }
     //scheduleCommit();
   });

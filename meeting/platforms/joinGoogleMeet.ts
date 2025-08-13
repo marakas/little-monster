@@ -6,48 +6,108 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
   console.log(`🚀 Starting Google Meet join process for: ${meetUrl}`);
   console.log(`🔍 Current page URL: ${page.url()}`);
 
-  /*
-  try {
-    await page.waitForSelector("span[jsname='V67aGc'].mUIrbf-vQzf8d", {
-      timeout: 5000,
+  async function findCameraBtn(page: Page) {
+    const selector =
+      'button[jsname="psRWwc"][aria-label*="camera" i],' + // in-call button
+      'div[jsname="psRWwc"][role="button"][aria-label*="camera" i]'; // pre-join role=button
+    return await page.$(selector);
+  }
+
+  async function cameraIsOff(page: Page): Promise<boolean> {
+    return await page.evaluate(() => {
+      const btn =
+        document.querySelector(
+          'button[jsname="psRWwc"][aria-label*="camera" i]'
+        ) ||
+        document.querySelector(
+          'div[jsname="psRWwc"][role="button"][aria-label*="camera" i]'
+        );
+      if (!btn) return false;
+      const el = btn as HTMLElement;
+      const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+      const muted = (el.getAttribute("data-is-muted") || "").toLowerCase();
+      // OFF if label says "Turn on camera" (JP: カメラをオン) or data-is-muted="true"
+      return (
+        aria.includes("turn on camera") ||
+        aria.includes("カメラをオン") ||
+        muted === "true"
+      );
     });
-    await page.click("span[jsname='V67aGc'].mUIrbf-vQzf8d"); // TODO : check if we need to click somethign different to allow mic access
-    console.log("Continued without microphone and camera.");
-    await delay();
-  } catch {
-    console.log("No option to continue without mic and camera found.");
   }
 
-  // ✅ Step 1: Handle first-time "Continue without microphone and camera" button
-  try {
-    await page.waitForSelector("button[jsname='IbE0S']", { timeout: 5000 });
-    await page.click("button[jsname='IbE0S']");
-    console.log("✅ Clicked 'Continue without microphone and camera' button.");
-  } catch {
-    console.log(
-      "⚠️ No first-time prompt for 'Continue without microphone and camera' found."
-    );
-  }
-  */
-
-  // ✅ Step 2: Skip early microphone muting - will be done after interface loads
-
-  // ✅ Step 3: Explicitly disable camera
-  try {
-    const cameraButton = await page.$("div[jsname='psRWwc']");
-    if (cameraButton) {
-      await cameraButton.click();
-      console.log("✅ Camera disabled.");
-      await delay();
-    } else {
-      console.warn("⚠️ Camera disable button not found.");
+  async function ensureCameraOff(page: Page, logTag = "🎥") {
+    try {
+      await page.waitForSelector("body", { timeout: 60000 });
+    } catch {}
+    try {
+      await page.mouse.move(300, 300);
+    } catch {}
+    // If already off, nothing to do
+    if (await cameraIsOff(page)) {
+      console.log(`${logTag} Camera already OFF`);
+      return true;
     }
-  } catch (error) {
-    console.error(
-      "❌ Error disabling camera:",
-      error instanceof Error ? error.message : error
-    );
+
+    const btn = await findCameraBtn(page);
+    if (btn) {
+      console.log(`${logTag} Toggling camera OFF via UI button…`);
+      await btn.click({ delay: 40 });
+      // wait until state flips to OFF
+      const flipped = await page
+        .waitForFunction(
+          () => {
+            const el =
+              document.querySelector(
+                'button[jsname="psRWwc"][aria-label*="camera" i]'
+              ) ||
+              document.querySelector(
+                'div[jsname="psRWwc"][role="button"][aria-label*="camera" i]'
+              );
+            if (!el) return false;
+            const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+            const muted = (
+              el.getAttribute("data-is-muted") || ""
+            ).toLowerCase();
+            return (
+              aria.includes("turn on camera") ||
+              aria.includes("カメラをオン") ||
+              muted === "true"
+            );
+          },
+          { timeout: 5000 }
+        )
+        .then(() => true)
+        .catch(() => false);
+
+      if (flipped) {
+        console.log(`${logTag} ✅ Camera is OFF`);
+        return true;
+      }
+
+      console.log(`${logTag} Button didn’t flip state—trying shortcut…`);
+    } else {
+      console.log(`${logTag} Camera button not found—trying shortcut…`);
+    }
+
+    // Fallback: Meet shortcut (Ctrl/⌘ + E)
+    try {
+      await page.keyboard.down("Control");
+      await page.keyboard.press("KeyE");
+      await page.keyboard.up("Control");
+    } catch {}
+    try {
+      await page.keyboard.down("Meta");
+      await page.keyboard.press("KeyE");
+      await page.keyboard.up("Meta");
+    } catch {}
+
+    const off = await cameraIsOff(page);
+    if (off) console.log(`${logTag} ✅ Camera OFF via shortcut`);
+    else console.log(`${logTag} ⚠️ Couldn’t confirm camera OFF`);
+    return off;
   }
+
+  await ensureCameraOff(page, "🎥 [pre-join]");
 
   try {
     await page.waitForSelector("button[data-mdc-dialog-action='accept']", {
@@ -77,150 +137,6 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
   } catch {
     console.log("No Google sign-in popup found.");
   }
-
-  // ✅ **MICROPHONE MUTING** - Simple approach without popup dismissal
-  /*
-  console.log(
-    "🎤 Now checking microphone state and muting if necessary (after interface load)..."
-  );
-  const micSelectors = [
-    // ✅ **EXACT SELECTORS FROM USER'S HTML** (highest priority)
-    "div[jsname='hw0c9'][aria-label*='Turn off microphone']", // EXACT match from user's inspect
-    "div[jsname='hw0c9'][aria-label*='Turn on microphone']", // Muted state version
-    "div[jsname='hw0c9'][data-is-muted='false']", // Using data attribute
-    "div[jsname='hw0c9'][data-is-muted='true']", // Muted state
-    "div[jsname='hw0c9']", // Original selector (broader)
-
-    // ✅ **ACTUAL MIC CONTROL SELECTORS** (prioritized)
-    "div[aria-label*='Turn off microphone']", // "Turn off microphone" div (mic ON)
-    "div[aria-label*='Turn on microphone']", // "Turn on microphone" div (mic OFF)
-    "button[aria-label*='Turn off microphone']", // "Turn off microphone" button (mic ON)
-    "button[aria-label*='Turn on microphone']", // "Turn on microphone" button (mic OFF)
-  ];
-
-  let micMutedAfterLoad = false;
-  for (const selector of micSelectors) {
-    try {
-      const micButton = await page.$(selector);
-      if (micButton) {
-        console.log(`🔍 Found microphone button with selector: ${selector}`);
-
-        // Get button state
-        const buttonState = await page.evaluate((el: Element) => {
-          const element = el as HTMLElement;
-          return {
-            ariaPressed: element.getAttribute("aria-pressed"),
-            ariaLabel: element.getAttribute("aria-label"),
-            className: element.className,
-            title: element.title,
-            textContent: element.textContent?.trim(),
-            disabled: element.hasAttribute("disabled"),
-            innerHTML: element.innerHTML,
-          };
-        }, micButton);
-
-        console.log(
-          `📊 Microphone button state:`,
-          JSON.stringify(buttonState, null, 2)
-        );
-
-        // ✅ **INTELLIGENT DEVICE PROBLEM FILTERING**
-        // Skip device problem buttons UNLESS they have correct structural indicators
-        const hasDeviceProblemText =
-          buttonState.ariaLabel?.toLowerCase().includes("problem") ||
-          buttonState.ariaLabel?.toLowerCase().includes("show more info") ||
-          buttonState.ariaLabel?.toLowerCase().includes("error") ||
-          buttonState.ariaLabel?.toLowerCase().includes("not found");
-
-        const hasValidMicStructure =
-          selector.includes("jsname='hw0c9'") || // Has correct jsname
-          selector.includes("data-is-muted") || // Has mute data attribute
-          buttonState.ariaLabel?.toLowerCase().includes("microphone"); // Clearly mic-related
-
-        if (hasDeviceProblemText && !hasValidMicStructure) {
-          console.log(
-            `⚠️ Skipping device problem button: "${buttonState.ariaLabel}" - not a mic control`
-          );
-          continue; // Skip this button and try next selector
-        } else if (hasDeviceProblemText && hasValidMicStructure) {
-          console.log(
-            `🔧 Docker environment: Found mic control with device problem label - will attempt to use it`
-          );
-          console.log(`   → Selector: ${selector}`);
-          console.log(`   → Label: "${buttonState.ariaLabel}"`);
-        }
-
-        // ✅ **ENHANCED MICROPHONE STATE DETECTION**
-        // Check data-is-muted attribute first (most reliable)
-        const dataMuted = await page.evaluate((el: Element) => {
-          return (el as HTMLElement).getAttribute("data-is-muted");
-        }, micButton);
-
-        console.log(`🔍 data-is-muted attribute: "${dataMuted}"`);
-
-        // Determine if microphone is currently ON (unmuted)
-        // Priority 1: data-is-muted="false" means mic is ON (even with device problem label)
-        // Priority 2: aria-label analysis
-        const isMicOn =
-          dataMuted === "false" || // Most reliable indicator (works even with "problem" labels)
-          buttonState.ariaPressed === "false" ||
-          buttonState.ariaLabel
-            ?.toLowerCase()
-            .includes("turn off microphone") || // EXACT match from user's HTML
-          buttonState.ariaLabel?.toLowerCase().includes("mute microphone") ||
-          buttonState.ariaLabel?.toLowerCase().includes("disable microphone") ||
-          (buttonState.ariaLabel?.toLowerCase().includes("mute") &&
-            !buttonState.ariaLabel?.toLowerCase().includes("unmute")) ||
-          buttonState.className?.includes("mic-on") ||
-          buttonState.className?.includes("enabled") ||
-          buttonState.title?.toLowerCase().includes("mute microphone") ||
-          buttonState.title?.toLowerCase().includes("turn off microphone");
-
-        console.log(
-          `🔍 Microphone analysis: ariaLabel="${buttonState.ariaLabel}", ariaPressed="${buttonState.ariaPressed}", isMicOn=${isMicOn}`
-        );
-
-        if (isMicOn) {
-          const isDeviceProblemButton = buttonState.ariaLabel
-            ?.toLowerCase()
-            .includes("problem");
-          if (isDeviceProblemButton) {
-            console.log(
-              "🔧 Docker environment: Using device problem button as mic control"
-            );
-            console.log(
-              `   → Reason: data-is-muted="${dataMuted}" indicates mic is ON`
-            );
-          }
-          console.log("🎤 Microphone is ON, muting NOW...");
-          await micButton.click();
-          await delay(1000);
-          console.log("✅ Microphone muted successfully.");
-          micMutedAfterLoad = true;
-          break;
-        } else {
-          console.log("🎤 Microphone is already muted.");
-          micMutedAfterLoad = true;
-          break;
-        }
-      }
-    } catch (error) {
-      console.log(
-        `⚠️ Error checking microphone button with selector ${selector}:`,
-        error instanceof Error ? error.message : error
-      );
-    }
-  }
-
-  if (!micMutedAfterLoad) {
-    console.log(
-      "⚠️ Could not locate or mute microphone - mic may be muted by default or use different selectors"
-    );
-  }
-
-  */
-
-  // ✅ Note: Name entry is handled in the main section below with better validation
 
   // ✅ **JOIN BUTTON** - Click "Ask to join"
   console.log('🚪 Looking for "Ask to join" button...');
@@ -254,80 +170,6 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
   if (!joinButtonClicked) {
     console.log('❌ Failed to find or click "Ask to join" button');
   }
-
-  // ✅ **POST-JOIN MICROPHONE VERIFICATION & MUTING** (Safety net)
-  /*
-  console.log(
-    "🎤 Verifying and muting microphone after joining meeting (safety net)..."
-  );
-  await delay(3000); // Wait for meeting UI to stabilize
-
-  // Use the same intelligent filtering logic for post-join muting
-  for (const selector of micSelectors) {
-    try {
-      const micButton = await page.$(selector);
-      if (micButton) {
-        console.log(
-          `🔍 Found post-join microphone button with selector: ${selector}`
-        );
-
-        const buttonState = await page.evaluate((el: Element) => {
-          const element = el as HTMLElement;
-          return {
-            ariaLabel: element.getAttribute("aria-label"),
-            dataMuted: element.getAttribute("data-is-muted"),
-          };
-        }, micButton);
-
-        // Apply same intelligent filtering for post-join
-        const hasDeviceProblemText =
-          buttonState.ariaLabel?.toLowerCase().includes("problem") ||
-          buttonState.ariaLabel?.toLowerCase().includes("show more info") ||
-          buttonState.ariaLabel?.toLowerCase().includes("error") ||
-          buttonState.ariaLabel?.toLowerCase().includes("not found");
-
-        const hasValidMicStructure =
-          selector.includes("jsname='hw0c9'") ||
-          selector.includes("data-is-muted") ||
-          buttonState.ariaLabel?.toLowerCase().includes("microphone");
-
-        if (hasDeviceProblemText && !hasValidMicStructure) {
-          console.log(
-            `⚠️ Skipping post-join device problem button: "${buttonState.ariaLabel}"`
-          );
-          continue;
-        }
-
-        // Check if mic is on and mute it
-        const isMicOn =
-          buttonState.dataMuted === "false" ||
-          buttonState.ariaLabel
-            ?.toLowerCase()
-            .includes("turn off microphone") ||
-          buttonState.ariaLabel?.toLowerCase().includes("mute microphone");
-
-        if (isMicOn) {
-          console.log(
-            "🎤 Post-join: Microphone is ON, muting as safety net..."
-          );
-          await micButton.click();
-          await delay(1000);
-          console.log("✅ Post-join microphone muting successful");
-          break;
-        } else {
-          console.log("✅ Post-join verification: Microphone is already muted");
-          break;
-        }
-      }
-    } catch (error) {
-      console.log(
-        `⚠️ Error checking post-join microphone with selector ${selector}:`,
-        error instanceof Error ? error.message : error
-      );
-    }
-  }
-  
-  */
 
   // ✅ **Enter bot name with better selector and validation**
   try {
@@ -367,7 +209,7 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
       await nameInput.click({ clickCount: 3 }); // Select all (in case evaluate didn't trigger events)
       await nameInput.press("Backspace"); // Delete any remaining text
       await delay(200); // Brief pause for UI to update
-      await nameInput.type("Pulse Companion");
+      await nameInput.type("Design Bot");
 
       // Verify the name was actually entered
       const enteredName = await nameInput.evaluate(
@@ -676,227 +518,8 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
     throw error;
   }
 
-  //await delay(10000); // Wait for meeting acceptance
-
-  // ✅ **POST-JOIN MICROPHONE VERIFICATION & MUTING** (Safety net)
-  /* console.log(
-    "🎤 Verifying and muting microphone after joining meeting (safety net)..."
-  );
-  await delay(3000); // Wait for meeting UI to stabilize
- */
-  const postJoinMicSelectors = [
-    // ✅ **EXACT SELECTORS FROM USER'S HTML** (highest priority)
-    "div[jsname='hw0c9'][aria-label*='Turn off microphone']", // EXACT match from user's inspect
-    "div[jsname='hw0c9'][aria-label*='Turn on microphone']", // Muted state version
-    "div[jsname='hw0c9'][data-is-muted='false']", // Using data attribute (mic ON)
-    "div[jsname='hw0c9'][data-is-muted='true']", // Using data attribute (mic OFF)
-    "div[jsname='hw0c9']", // Broader fallback
-
-    // ✅ **STANDARD POST-JOIN SELECTORS**
-    "button[aria-label*='Unmute']", // If button says "Unmute", mic is muted ✅
-    "button[aria-label*='Turn on microphone']", // If says "Turn on", mic is off ✅
-    "button[aria-label*='Mute']", // If says "Mute", mic is on ❌
-    "button[aria-label*='Turn off microphone']", // If says "Turn off", mic is on ❌
-    "div[aria-label*='Turn off microphone']", // Div version
-    "div[aria-label*='Turn on microphone']", // Div version
-    "div[aria-label*='Unmute']", // Div unmute
-    "div[aria-label*='Mute microphone']", // Div mute
-    "[role='button'][aria-label*='Turn off microphone']", // Role-based
-    "[role='button'][aria-label*='Turn on microphone']", // Role-based
-    "button[data-tooltip*='Unmute']", // Tooltip-based
-    "button[title*='Unmute']", // Title-based
-    "button[jsname='BOHaEe']", // Alternative selector
-  ];
-
-  let postJoinMicMuted = false;
-  for (const selector of postJoinMicSelectors) {
-    try {
-      const micButton = await page.$(selector);
-      if (micButton) {
-        /*  console.log(
-          `🔍 Found post-join microphone button with selector: ${selector}`
-        ); */
-
-        const buttonState = await page.evaluate((el: Element) => {
-          const element = el as HTMLElement;
-          return {
-            ariaPressed: element.getAttribute("aria-pressed"),
-            ariaLabel: element.getAttribute("aria-label"),
-            className: element.className,
-            title: element.title,
-            textContent: element.textContent?.trim(),
-            dataMuted: element.getAttribute("data-is-muted"),
-            dataTooltip: element.getAttribute("data-tooltip"),
-            jsname: element.getAttribute("jsname"),
-          };
-        }, micButton);
-
-        /* console.log(
-          `📊 Post-join microphone button state:`,
-          JSON.stringify(buttonState, null, 2)
-        );
- */
-        // ✅ **INTELLIGENT DEVICE PROBLEM FILTERING** in post-join too
-        const hasDeviceProblemText =
-          buttonState.ariaLabel?.toLowerCase().includes("problem") ||
-          buttonState.ariaLabel?.toLowerCase().includes("show more info") ||
-          buttonState.ariaLabel?.toLowerCase().includes("error") ||
-          buttonState.ariaLabel?.toLowerCase().includes("not found");
-
-        const hasValidMicStructure =
-          selector.includes("jsname='hw0c9'") || // Has correct jsname
-          selector.includes("data-is-muted") || // Has mute data attribute
-          buttonState.ariaLabel?.toLowerCase().includes("microphone"); // Clearly mic-related
-
-        if (hasDeviceProblemText && !hasValidMicStructure) {
-          /*  console.log(
-            `⚠️ Skipping post-join device problem button: "${buttonState.ariaLabel}" - not a mic control`
-          ); */
-          continue;
-        } else if (hasDeviceProblemText && hasValidMicStructure) {
-          /* console.log(
-            `🔧 Post-join Docker environment: Found mic control with device problem label - will attempt to use it`
-          );
-          console.log(`   → Selector: ${selector}`);
-          consol e.log(`   → Label: "${buttonState.ariaLabel}"`);
-          */
-        }
-
-        // Check data-is-muted attribute first (most reliable)
-        const dataMuted = buttonState.dataMuted;
-        console.log(`🔍 Post-join data-is-muted attribute: "${dataMuted}"`);
-
-        // Microphone is MUTED if:
-        // - data-is-muted="true" (most reliable)
-        // - aria-pressed="true" (pressed = muted)
-        // - aria-label contains "Unmute" or "Turn on microphone"
-        const isMicMuted =
-          dataMuted === "true" ||
-          buttonState.ariaPressed === "true" ||
-          buttonState.ariaLabel?.toLowerCase().includes("unmute") ||
-          buttonState.ariaLabel?.toLowerCase().includes("turn on microphone") ||
-          buttonState.ariaLabel?.toLowerCase().includes("enable microphone") ||
-          buttonState.className?.includes("muted") ||
-          buttonState.className?.includes("mic-off") ||
-          buttonState.title?.toLowerCase().includes("unmute");
-
-        // Microphone is ON if:
-        // - data-is-muted="false" (most reliable)
-        // - aria-pressed="false" (not pressed = not muted)
-        // - aria-label contains "Mute" or "Turn off microphone"
-        const isMicOn =
-          dataMuted === "false" ||
-          buttonState.ariaPressed === "false" ||
-          buttonState.ariaLabel
-            ?.toLowerCase()
-            .includes("turn off microphone") ||
-          buttonState.ariaLabel?.toLowerCase().includes("mute microphone") ||
-          (buttonState.ariaLabel?.toLowerCase().includes("mute") &&
-            !buttonState.ariaLabel?.toLowerCase().includes("unmute"));
-
-        console.log(
-          `🔍 Post-join microphone analysis: isMuted=${isMicMuted}, isOn=${isMicOn}`
-        );
-
-        if (isMicMuted) {
-          //  console.log("✅ Microphone is properly muted in meeting.");
-          postJoinMicMuted = true;
-          break;
-        } else if (isMicOn) {
-          //console.log("⚠️ Microphone is ON in meeting, muting now...");
-          //await micButton.click();
-          //await delay(1000);
-          //console.log("✅ Microphone muted in meeting.");
-          postJoinMicMuted = true;
-          break;
-        }
-      }
-    } catch (error) {
-      console.log(
-        `⚠️ Error with post-join mic selector ${selector}:`,
-        error instanceof Error ? error.message : error
-      );
-    }
-  }
-
-  if (!postJoinMicMuted) {
-    console.log(
-      "⚠️ Could not verify microphone state after joining - attempting post-join fallback..."
-    );
-
-    try {
-      const postJoinFallbackResult = await page.evaluate(() => {
-        const buttons = Array.from(
-          document.querySelectorAll(
-            'button, div[role="button"], div[jscontroller], div[jsname]'
-          )
-        );
-        for (const btn of buttons) {
-          const element = btn as HTMLElement;
-          const label = element.getAttribute("aria-label")?.toLowerCase() || "";
-          const title = element.title?.toLowerCase() || "";
-          const dataMuted = element.getAttribute("data-is-muted");
-          const jsname = element.getAttribute("jsname");
-
-          // Skip device problem buttons
-          if (
-            label.includes("problem") ||
-            label.includes("show more info") ||
-            label.includes("error") ||
-            label.includes("not found")
-          ) {
-            continue;
-          }
-
-          // Priority 1: Check data-is-muted="false" (mic is ON, needs muting)
-          if (
-            dataMuted === "false" ||
-            label.includes("turn off microphone") ||
-            title.includes("turn off microphone") ||
-            (label.includes("mute microphone") && !label.includes("unmute")) ||
-            (jsname === "hw0c9" && dataMuted === "false")
-          ) {
-            console.log("Found post-join fallback mic button:", {
-              label: element.getAttribute("aria-label"),
-              title: element.title,
-              dataMuted,
-              jsname,
-              reason:
-                dataMuted === "false"
-                  ? "data-is-muted=false"
-                  : "aria-label match",
-            });
-            element.click();
-            return {
-              success: true,
-              method: "post-join-fallback",
-              label,
-              dataMuted,
-              jsname,
-            };
-          }
-        }
-        return { success: false };
-      });
-
-      if (postJoinFallbackResult.success) {
-        console.log(
-          "✅ Post-join fallback microphone mute successful:",
-          postJoinFallbackResult
-        );
-        postJoinMicMuted = true;
-      } else {
-        console.log(
-          "ℹ️ No post-join mute actions needed - microphone may already be properly muted"
-        );
-      }
-    } catch (finalError) {
-      console.log(
-        "⚠️ Post-join fallback mute attempt failed:",
-        finalError instanceof Error ? finalError.message : finalError
-      );
-    }
-  }
+  await delay(1500);
+  await ensureCameraOff(page, "🎥 [in-call]");
 
   // ✅ Handle "This Video call is being recorded" modal
   try {
