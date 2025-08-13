@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { stopSimpleScreenshots } from "./visual_simple.ts";
 
 import AWS from "aws-sdk";
 
@@ -65,6 +66,9 @@ export async function stopMeetBot() {
       clearTimeout(state.stopTimeout);
       state.stopTimeout = null;
     }
+    console.log("⏹️ Calling stopSimpleScreenshots...");
+
+    stopSimpleScreenshots();
 
     console.log("⏹️ Calling stopAudioProcessing...");
     stopAudioProcessing();

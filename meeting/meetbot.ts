@@ -4,7 +4,7 @@ import { mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import { PassThrough } from "node:stream";
 import * as os from "node:os";
-import { writeFileSync } from "fs";
+import { startSimpleScreenshots } from "./visual_simple.ts";
 
 import {
   initRealtime,
@@ -14,7 +14,7 @@ import {
   sendUserText,
   commitNow,
 } from "./realtimeClient.ts";
-import { upsamplePCM16Buffer, writeWavFile } from "./upsample.ts";
+import { writeWavFile } from "./upsample.ts";
 
 import ffmpeg from "fluent-ffmpeg";
 // import puppeteer from 'puppeteer-extra'
@@ -22,20 +22,14 @@ import ffmpeg from "fluent-ffmpeg";
 import { getStream, launch } from "puppeteer-stream";
 
 import {
-  MAX_INTERVAL,
   MEET_BOT_MAX_DURATION,
-  MIN_AUDIO_CHUNK_LENGTH,
-  MIN_SILENCE_DURATION,
-  SILENCE_THRESHOLD,
   ENABLE_FULL_AUDIO_ACCUMULATION,
 } from "./constants.ts";
 import { env } from "./env.ts";
 import state, { type Page } from "./state.ts";
 import { stopAudioProcessing, stopMeetBot } from "./stop_meet_bot.ts";
 import {
-  batchAudioChunk,
   delay,
-  isBufferSilent,
   monitorKickout,
   monitorSpeakers,
   openChatWindow,
@@ -44,7 +38,6 @@ import {
   transformZoomUrl,
   type MeetingPlatform,
 } from "./utils.ts";
-import { sendToWhisper } from "./whisper.ts";
 import audioProcessor from "./audio-processor.ts";
 import { joinGoogleMeet } from "./platforms/joinGoogleMeet.ts";
 import { joinZoom } from "./platforms/joinZoom.ts";
@@ -758,6 +751,10 @@ export async function startMeetBot(
     monitorKickout(page);
 
     console.log("📡 Bot is now listening to the meeting...");
+
+    // Start super-simple screenshots (1 fps is fine for diagram detection)
+    await startSimpleScreenshots(page, 1);
+
     //await delay();
     /*
     const sr = 48000,
