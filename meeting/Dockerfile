@@ -6,6 +6,7 @@ USER root
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
+    python3 python3-venv python3-pip \
     curl \
     ffmpeg \
     pulseaudio \ 
@@ -64,6 +65,17 @@ RUN chmod +x /entrypoint.sh
 # Switch back to non-root user for security
 USER pulseuser
 WORKDIR /home/pulseuser/app
+
+# Copy Python requirements first for better docker layer caching
+COPY --chown=pulseuser:pulseuser py/requirements.txt ./py/requirements.txt
+
+# Create venv and install Python deps
+RUN python3 -m venv /home/pulseuser/venv && \
+    . /home/pulseuser/venv/bin/activate && \
+    pip install --no-cache-dir -r py/requirements.txt
+
+# Copy the rest of the Python code
+COPY --chown=pulseuser:pulseuser py ./py
 
 # Copy package.json first
 COPY --chown=pulseuser:pulseuser package.json package-lock.json ./

@@ -48,3 +48,6 @@ export function stopSimpleScreenshots() {
     console.log("🧹 Simple screenshots stopped");
   }
 }
+export function getScreenshotDir() {
+  return screenshotDir;
+}

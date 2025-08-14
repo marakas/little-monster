@@ -1,10 +1,16 @@
 import assert from "node:assert";
 import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import { PassThrough } from "node:stream";
 import * as os from "node:os";
-import { startSimpleScreenshots } from "./visual_simple.ts";
+import {
+  startScreencastCapture,
+  getScreenshotDir,
+} from "./visual_screencast.ts";
+import chokidar from "chokidar";
+import { analyzeScreenshot } from "./pythonBridge.ts";
 
 import {
   initRealtime,
@@ -753,21 +759,98 @@ export async function startMeetBot(
     console.log("📡 Bot is now listening to the meeting...");
 
     // Start super-simple screenshots (1 fps is fine for diagram detection)
-    await startSimpleScreenshots(page, 1);
+    await startScreencastCapture(state.page!, state.sessionDir!, {
+      fps: 0.33, // 1 every ~3s (tune this)
+      quality: 60, // tune 40–70 if you want lighter writes
+      maxWidth: 1280,
+      maxHeight: 720,
+    });
+    const dir = getScreenshotDir();
+    if (dir) {
+      const absDir = path.resolve(dir);
+      const MIN_ANALYSIS_INTERVAL_MS = Number(
+        process.env.VISION_MIN_INTERVAL_MS || 5000
+      );
+      let lastRun = 0;
 
-    //await delay();
-    /*
-    const sr = 48000,
-      f = 440,
-      dur = 0.6;
-    const tone48 = Array.from({ length: Math.floor(sr * dur) }, (_, i) =>
-      Math.round(Math.sin((2 * Math.PI * f * i) / sr) * 32767)
-    );
-    await state.page.evaluate(
-      ({ rate, samples }) => (window as any).enqueuePcmAt(rate, samples),
-      { rate: sr, samples: tone48 }
-    );
-    */
+      console.log(`👀 Watching for new screenshots in ${absDir}`);
+
+      const watcher = chokidar.watch(absDir, {
+        persistent: true,
+        ignoreInitial: true,
+        depth: 0,
+        usePolling: true, // important for Docker/overlayfs
+        interval: 500,
+        binaryInterval: 500,
+        awaitWriteFinish: {
+          stabilityThreshold: 700,
+          pollInterval: 200,
+        },
+      });
+
+      const maybeAnalyze = async (filePath: string) => {
+        if (!filePath.toLowerCase().endsWith(".jpg")) return;
+
+        console.log(`👀 [vision] file event: ${filePath}`);
+        const now = Date.now();
+        if (now - lastRun < MIN_ANALYSIS_INTERVAL_MS) {
+          if (process.env.VISION_DEBUG === "1") {
+            console.log("[vision] throttled – skipping analysis");
+          }
+          return;
+        }
+        lastRun = now;
+
+        try {
+          const res = await analyzeScreenshot(filePath);
+          console.log(
+            `[vision] summary: ${res?.summary?.slice(0, 200) || "<empty>"}`
+          );
+          //await sendUserText(`[Vision] ${res.summary}`);
+        } catch (e: any) {
+          console.error("[vision] analysis failed:", e?.message || e);
+        }
+      };
+
+      watcher
+        .on("add", (p) => maybeAnalyze(p))
+        .on("change", (p) => maybeAnalyze(p))
+        .on("error", (err) => console.error("[vision] watcher error:", err));
+
+      // Fallback scanner (in case fs events are missed)
+      const FALLBACK_SCAN_SEC = Number(process.env.VISION_SCAN_SEC || 10);
+      const scanTimer = setInterval(async () => {
+        try {
+          const entries = await fsp.readdir(absDir, { withFileTypes: true });
+          const jpgPaths = entries
+            .filter((d) => d.isFile() && d.name.toLowerCase().endsWith(".jpg"))
+            .map((d) => path.join(absDir, d.name));
+
+          if (!jpgPaths.length) return;
+
+          const stats = await Promise.all(
+            jpgPaths.map(async (p) => {
+              const st = await fsp.stat(p);
+              return { p, mtimeMs: st.mtimeMs };
+            })
+          );
+
+          stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+          await maybeAnalyze(stats[0].p);
+        } catch {
+          /* silent */
+        }
+      }, FALLBACK_SCAN_SEC * 1000);
+
+      // Clean up when meeting stops
+      //state.onStopCallbacks = state.onStopCallbacks || [];
+      /*state.onStopCallbacks.push(async () => {
+        try {
+          await watcher.close();
+        } catch {}
+        clearInterval(scanTimer);
+      });*/
+    }
     // Kick off the interview via a hard-coded user message
     sendUserText(
       "Please begin the interview now by stating the scenario. Start with the simple web app to display cat pictures."
