@@ -9,7 +9,6 @@ RUN apt-get update && apt-get install -y \
     python3 python3-venv python3-pip \
     curl \
     ffmpeg \
-    pulseaudio \ 
     xvfb \
     x11-utils \
     dbus-x11 \
@@ -43,15 +42,6 @@ RUN mkdir -p /home/pulseuser/.config/pulse && \
 
 # Allow non-root user to access X11
 RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
-
-# Configure PulseAudio to run as a normal user
-RUN echo "load-module module-null-sink sink_name=ZoomAudio" >> /etc/pulse/default.pa && \
-    echo "set-default-sink ZoomAudio" >> /etc/pulse/default.pa && \
-    echo "load-module module-loopback source=ZoomAudio.monitor sink=ZoomAudio latency_msec=1" >> /etc/pulse/default.pa && \
-    echo "load-module module-native-protocol-unix" >> /etc/pulse/default.pa && \
-    echo "exit-idle-time = -1" >> /etc/pulse/daemon.conf && \
-    echo "flat-volumes = no" >> /etc/pulse/daemon.conf && \
-    echo "disable-shm = false" >> /etc/pulse/client.conf
 
 # Set up DBus with correct permissions
 RUN mkdir -p /var/run/dbus && \

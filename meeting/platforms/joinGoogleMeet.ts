@@ -215,13 +215,13 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
       const enteredName = await nameInput.evaluate(
         (el) => (el as HTMLInputElement).value
       );
-      if (enteredName === "Pulse Companion") {
+      if (enteredName === "Design Bot") {
         console.log(
           `✅ Bot name successfully entered using ${usedSelector}: "${enteredName}"`
         );
       } else {
         console.log(
-          `⚠️ Name verification failed. Expected: "Pulse Companion", Got: "${enteredName}"`
+          `⚠️ Name verification failed. Expected: "Design Bot", Got: "${enteredName}"`
         );
       }
 

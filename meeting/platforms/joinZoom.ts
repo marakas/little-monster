@@ -96,7 +96,7 @@ export async function joinZoom(page) {
     }
 
     // Use fixed bot name for consistency
-    const botName = "Pulse Companion";
+    const botName = "Design Bot";
     console.log(`🤖 Using name: ${botName}`);
 
     // ✅ **Enter bot name with human-like typing** (EXACT from your working code)

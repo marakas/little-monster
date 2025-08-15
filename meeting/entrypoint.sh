@@ -16,10 +16,6 @@ dbus-daemon --session --address=unix:path=/run/dbus/system_bus_socket &
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
 sleep 2  # Ensure DBus initializes
 
-# Start PulseAudio
-pulseaudio --start --daemonize=false --system=false --log-level=info &
-sleep 2
-
 # Ensure the recording directory exists
 RECORDINGS_DIR="/home/pulseuser/app/recordings"
 mkdir -p "$RECORDINGS_DIR"

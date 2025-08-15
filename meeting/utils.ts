@@ -387,7 +387,7 @@ async function getActiveSpeakersGoogleMeet(page: Page): Promise<string[]> {
         const lower = speakerName.toLowerCase();
         const isValidName =
           speakerName &&
-          speakerName !== "Pulse Companion" &&
+          speakerName !== "Design Bot" &&
           !lower.includes("gemini") &&
           !lower.includes("taking notes") &&
           !lower.includes("transcript") &&
@@ -442,7 +442,7 @@ async function getActiveSpeakersGoogleMeet(page: Page): Promise<string[]> {
               .trim();
             if (
               name &&
-              name !== "Pulse Companion" &&
+              name !== "Design Bot" &&
               name.length > 1 &&
               name.length < 50
             ) {
@@ -554,10 +554,9 @@ async function getActiveSpeakersTeams(page: Page): Promise<string[]> {
         cleanText = cleanText.replace(/\s*\(presenter\)\s*/i, "").trim();
         cleanText = cleanText.replace(/\s*\(organizer\)\s*/i, "").trim();
 
-        // Split concatenated names (like "Pulse CompanionLouiejie Arañes")
         // Look for pattern: "BotName + UserName" and extract UserName
-        if (cleanText.includes("Pulse Companion")) {
-          cleanText = cleanText.replace("Pulse Companion", "").trim();
+        if (cleanText.includes("Design Bot")) {
+          cleanText = cleanText.replace("Design Bot", "").trim();
         }
 
         // If still has spaces, might be "FirstName LastName"
@@ -766,7 +765,7 @@ async function getActiveSpeakersTeams(page: Page): Promise<string[]> {
       }
 
       const finalSpeakers = Array.from(detectedSpeakers).filter(
-        (name) => name && name !== "Pulse Companion" && !isUIElement(name)
+        (name) => name && name !== "Design Bot" && !isUIElement(name)
       );
 
       return finalSpeakers;
@@ -878,10 +877,9 @@ async function getActiveSpeakersZoom(page: Page): Promise<string[]> {
         cleanText = cleanText.replace(/\s*\(presenter\)\s*/i, "").trim();
         cleanText = cleanText.replace(/\s*\(organizer\)\s*/i, "").trim();
 
-        // Split concatenated names (like "Pulse CompanionLouiejie Arañes")
         // Look for pattern: "BotName + UserName" and extract UserName
-        if (cleanText.includes("Pulse Companion")) {
-          cleanText = cleanText.replace("Pulse Companion", "").trim();
+        if (cleanText.includes("Design Bot")) {
+          cleanText = cleanText.replace("Design Bot", "").trim();
         }
 
         // If still has spaces, might be "FirstName LastName"
@@ -1090,7 +1088,7 @@ async function getActiveSpeakersZoom(page: Page): Promise<string[]> {
       }
 
       const finalSpeakers = Array.from(detectedSpeakers).filter(
-        (name) => name && name !== "Pulse Companion" && !isUIElement(name)
+        (name) => name && name !== "Design Bot" && !isUIElement(name)
       );
 
       return finalSpeakers;
@@ -1770,7 +1768,7 @@ export function monitorParticipants(page: Page) {
         activeSpeakers = await getActiveSpeakers(page);
         // Filter out bot name
         activeSpeakers = activeSpeakers.filter(
-          (speaker) => speaker !== "Pulse Companion" && speaker.trim() !== ""
+          (speaker) => speaker !== "Design Bot" && speaker.trim() !== ""
         );
       } catch (err) {
         console.log(
@@ -1835,7 +1833,7 @@ export async function monitorSpeakers(page: Page) {
     const initialSpeakers = await getActiveSpeakers(page);
     if (initialSpeakers.length > 0) {
       const firstSpeaker = initialSpeakers.find(
-        (name) => name !== "Pulse Companion"
+        (name) => name !== "Design Bot"
       );
       if (firstSpeaker) {
         state.currentSpeaker = firstSpeaker;
@@ -1863,7 +1861,7 @@ export async function monitorSpeakers(page: Page) {
                 .trim()
                 .replace(/\s*\(You\)/i, "")
                 .trim();
-              if (name && name !== "Pulse Companion") {
+              if (name && name !== "Design Bot") {
                 participants.push(name);
                 console.log(`Found participant in tile: ${name}`);
               }
@@ -1889,7 +1887,7 @@ export async function monitorSpeakers(page: Page) {
                   .trim()
                   .replace(/\s*\(You\)/i, "")
                   .trim();
-                if (name && name !== "Pulse Companion") {
+                if (name && name !== "Design Bot") {
                   participants.push(name + " (You)");
                   console.log(`Found user themselves: ${name}`);
                 }
@@ -1966,14 +1964,14 @@ export async function monitorSpeakers(page: Page) {
         // Only update if we have a real speaker name (not bot name)
         if (
           newSpeaker &&
-          newSpeaker !== "Pulse Companion" &&
+          newSpeaker !== "Design Bot" &&
           newSpeaker !== state.currentSpeaker
         ) {
           console.log(
             `🔄 [${BOT_ID}] Speaker changed: ${state.currentSpeaker} → ${newSpeaker}`
           );
           state.currentSpeaker = newSpeaker;
-        } else if (newSpeaker && newSpeaker !== "Pulse Companion") {
+        } else if (newSpeaker && newSpeaker !== "Design Bot") {
           state.currentSpeaker = newSpeaker;
         }
 
