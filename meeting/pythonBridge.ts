@@ -4,6 +4,11 @@ import * as path from "node:path";
 
 export interface VisionResult {
   summary: string;
+  whiteboard?: {
+    state: "none" | "blank" | "has_content" | "unknown";
+    app?: string;
+  };
+  diagram?: any;
 }
 const DEBUG = process.env.VISION_DEBUG === "1";
 

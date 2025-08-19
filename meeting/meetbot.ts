@@ -10,7 +10,6 @@ import {
   getScreenshotDir,
 } from "./visual_screencast.ts";
 import chokidar from "chokidar";
-import { analyzeScreenshot } from "./pythonBridge.ts";
 
 import {
   initRealtime,
@@ -21,6 +20,11 @@ import {
   commitNow,
 } from "./realtimeClient.ts";
 import { writeWavFile } from "./upsample.ts";
+import {
+  registerVisionProvider,
+  startPhasedInterview,
+} from "./realtimeClient.ts";
+import { analyzeScreenshot, type VisionResult } from "./pythonBridge.ts";
 
 import ffmpeg from "fluent-ffmpeg";
 // import puppeteer from 'puppeteer-extra'
@@ -403,6 +407,31 @@ export async function startMeetBot(
       return { status: "error", message: "Unsupported meeting platform" };
     }
 
+    let latestScreenshotPath: string | null = null;
+    registerVisionProvider(async () => {
+      if (!latestScreenshotPath) {
+        console.log("[vision] provider: no screenshot yet");
+        return { state: "unknown", summary: "No screenshot yet." };
+      }
+
+      const res = await analyzeScreenshot(latestScreenshotPath);
+      const state =
+        res.whiteboard?.state ??
+        (/blank whiteboard|whiteboard.*blank/i.test(res.summary)
+          ? "blank"
+          : /whiteboard|miro|excalidraw|jamboard|figma|canvas/i.test(
+              res.summary
+            )
+          ? "has_content"
+          : /does not show a whiteboard|no whiteboard/i.test(res.summary)
+          ? "none"
+          : "unknown");
+
+      const reply = { state, summary: res.summary, app: res.whiteboard?.app };
+      console.log(`[vision] provider → ${JSON.stringify(reply)}`); // ← you should SEE this
+      return reply;
+    });
+
     // ✅ Store platform in state for use across modules
     state.meetingPlatform = meetingPlatform;
 
@@ -766,6 +795,7 @@ export async function startMeetBot(
       maxHeight: 720,
     });
     const dir = getScreenshotDir();
+
     if (dir) {
       const absDir = path.resolve(dir);
       const MIN_ANALYSIS_INTERVAL_MS = Number(
@@ -790,6 +820,7 @@ export async function startMeetBot(
 
       const maybeAnalyze = async (filePath: string) => {
         if (!filePath.toLowerCase().endsWith(".jpg")) return;
+        latestScreenshotPath = filePath;
 
         console.log(`👀 [vision] file event: ${filePath}`);
         const now = Date.now();
@@ -851,10 +882,9 @@ export async function startMeetBot(
         clearInterval(scanTimer);
       });*/
     }
-    // Kick off the interview via a hard-coded user message
-    sendUserText(
-      "Please begin the interview now by stating the scenario. Start with the simple web app to display cat pictures."
-    );
+
+    await startPhasedInterview();
+
     // ✅ **Auto-stop the bot after the maximum duration**
     state.stopTimeout = setTimeout(() => {
       console.log(

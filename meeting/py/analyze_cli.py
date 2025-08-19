@@ -5,7 +5,7 @@ import base64
 import json
 import os
 import sys
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 
 from pydantic import BaseModel
 # Uses your existing OpenAI Agents SDK
@@ -32,6 +32,10 @@ class ArchitectureDiagram(BaseModel):
 # capture the last tool output so we can return structured JSON to Node
 _LAST_PARSED_DIAGRAM: Optional[ArchitectureDiagram] = None
 
+WhiteboardState = Literal["none", "blank", "has_content", "unknown"]
+_LAST_WHITEBOARD: Optional[Dict[str, Any]] = None  
+
+
 # =========================
 # Vision Tool
 # =========================
@@ -52,20 +56,49 @@ def image_to_b64(path: str) -> str:
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
+
+# =========================
+# Whiteboard Tool
+# =========================
+
+@function_tool
+def classify_whiteboard(state: WhiteboardState, app: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Classify whether the screenshot shows a whiteboard and if it is blank or has content.
+    """
+    global _LAST_WHITEBOARD
+    _LAST_WHITEBOARD = {"state": state, "app": app}
+    return _LAST_WHITEBOARD
+
+def _infer_whiteboard_state_from_text(txt: str) -> Dict[str, Any]:
+    t = (txt or "").lower()
+    if any(k in t for k in ["whiteboard", "miro", "excalidraw", "jamboard", "figma", "canvas"]):
+        if any(k in t for k in ["blank", "empty", "no content", "nothing drawn"]):
+            return {"state": "blank"}
+        if any(k in t for k in ["diagram", "component", "box", "arrow", "content", "drawing"]):
+            return {"state": "has_content"}
+        return {"state": "blank"}  # conservative OK to proceed
+    if any(k in t for k in ["no whiteboard", "not a whiteboard", "does not show a whiteboard"]):
+        return {"state": "none"}
+    return {"state": "unknown"}
+
 # =========================
 # Vision Agent
 # =========================
 
 VISION_INSTRUCTIONS = (
     "You are a system architecture parser. "
-    "When given a diagram image, extract all components and their relationships. "
-    "Call the `parse_architecture_diagram` function using a structured JSON format."
+    "First determine if the image shows a WHITEBOARD app. "
+    "If yes, call `classify_whiteboard` with state='blank' or 'has_content' and app name if known. "
+    "If no, call `classify_whiteboard` with state='none'. "
+    "If unsure, use state='unknown'. "
+    "If you can see a drawn system diagram, also call `parse_architecture_diagram` with components/connections."
 )
 
 vision_agent = Agent(
     name="DiagramParsingAgent",
     instructions=VISION_INSTRUCTIONS,
-    tools=[parse_architecture_diagram],
+    tools=[parse_architecture_diagram, classify_whiteboard],
 )
 
 # =========================
@@ -157,18 +190,16 @@ synthesis_agent = Agent(
     """
 )
 
+
+
 # =========================
 # Core Routines
 # =========================
 
 async def run_vision(image_path: str) -> Dict[str, Any]:
-    """
-    Run the vision agent on an image and return:
-      - summary: free-text summary
-      - diagram: structured tool output (components, connections) if available
-    """
-    global _LAST_PARSED_DIAGRAM
-    _LAST_PARSED_DIAGRAM = None  # reset per call
+    global _LAST_PARSED_DIAGRAM, _LAST_WHITEBOARD
+    _LAST_PARSED_DIAGRAM = None
+    _LAST_WHITEBOARD = None
 
     b64 = image_to_b64(image_path)
     result = await Runner.run(
@@ -186,21 +217,25 @@ async def run_vision(image_path: str) -> Dict[str, Any]:
             },
             {
                 "role": "user",
-                "content": "Please analyze this system architecture diagram and extract the components and their connections.",
+                "content": "Classify whiteboard (blank/has_content/none/unknown). If a diagram exists, extract it.",
             },
         ],
     )
 
-    out: Dict[str, Any] = {
-        "summary": result.final_output
-    }
+    # Keep the text fallback if the tool wasn't called
+    wb = _LAST_WHITEBOARD or _infer_whiteboard_state_from_text(result.final_output)
 
+    out: Dict[str, Any] = {
+        "summary": result.final_output,
+        "whiteboard": wb,
+    }
     if _LAST_PARSED_DIAGRAM is not None:
         out["diagram"] = json.loads(_LAST_PARSED_DIAGRAM.model_dump_json())
     else:
         out["diagram"] = None
 
     return out
+
 
 async def run_assessments(document: str) -> Dict[str, Any]:
     """
@@ -257,10 +292,8 @@ def build_merged_document(requirements: Optional[str],
 # =========================
 
 async def run_cli(args):
-    # Vision step (always runs)
     vision_out = await run_vision(args.image)
 
-    # Optional assessment step (only if we have at least one of transcript/requirements)
     assessments_blob: Optional[Dict[str, Any]] = None
     if args.transcript or args.requirements:
         transcript = load_text_file(args.transcript)
@@ -270,12 +303,12 @@ async def run_cli(args):
 
     final_payload: Dict[str, Any] = {
         "summary": vision_out["summary"],
+        "whiteboard": vision_out.get("whiteboard"),    
         "diagram": vision_out.get("diagram"),
         "assessments": (assessments_blob or {}).get("assessments") if assessments_blob else None,
         "synthesis": (assessments_blob or {}).get("synthesis") if assessments_blob else None,
     }
 
-    # Print ONLY the JSON to stdout so the Node bridge can parse it
     print(json.dumps(final_payload, ensure_ascii=False))
 
 def main():
