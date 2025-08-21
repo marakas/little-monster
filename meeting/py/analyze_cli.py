@@ -29,6 +29,19 @@ class ArchitectureDiagram(BaseModel):
     components: List[Component]
     connections: List[Connection]
 
+class RubricScore(BaseModel):
+    category: str  # e.g. "requirements", "feed", "media", "data", ...
+    score: int     # 0-5
+    comment: str
+
+class LiveAssessment(BaseModel):
+    scores: List[RubricScore]
+    top_gaps: List[str]
+    suggested_next_question: str
+
+_LAST_LIVE: Optional[LiveAssessment] = None
+
+
 # capture the last tool output so we can return structured JSON to Node
 _LAST_PARSED_DIAGRAM: Optional[ArchitectureDiagram] = None
 
@@ -82,6 +95,7 @@ def _infer_whiteboard_state_from_text(txt: str) -> Dict[str, Any]:
         return {"state": "none"}
     return {"state": "unknown"}
 
+
 # =========================
 # Vision Agent
 # =========================
@@ -99,6 +113,33 @@ vision_agent = Agent(
     name="DiagramParsingAgent",
     instructions=VISION_INSTRUCTIONS,
     tools=[parse_architecture_diagram, classify_whiteboard],
+)
+
+# =========================
+# Live Coach 
+# =========================
+
+@function_tool
+def report_live_assessment(payload: LiveAssessment) -> Dict[str, Any]:
+    global _LAST_LIVE
+    _LAST_LIVE = payload
+    return payload.model_dump()
+
+live_coach_agent = Agent(
+    name="LiveCoachAgent",
+    instructions="""
+You are coaching a system-design interviewer in real time.
+Read the merged document (requirements + last diagram summary + recent transcript).
+Output ONE call to report_live_assessment with:
+- scores: list of categories with 0–5 scores and a brief comment
+- top_gaps: 3–5 specific missing items to dig into next
+- suggested_next_question: one concrete question that advances the interview
+
+Scoring rubric, prioritize (Instagram):
+- requirements, data model, media pipeline (upload/transcode/CDN), feed generation (push/pull/ranking),
+  caching, scale & reliability, consistency/availability, observability, security.
+""",
+    tools=[report_live_assessment],
 )
 
 # =========================
@@ -263,6 +304,12 @@ async def run_assessments(document: str) -> Dict[str, Any]:
         "synthesis": synthesis_result.final_output,
     }
 
+async def run_live_coach(merged: str) -> Optional[Dict[str, Any]]:
+    global _LAST_LIVE
+    _LAST_LIVE = None
+    result = await Runner.run(live_coach_agent, input=merged)
+    return _LAST_LIVE.model_dump() if _LAST_LIVE else None
+
 def load_text_file(path: Optional[str]) -> Optional[str]:
     if not path:
         return None
@@ -293,13 +340,14 @@ def build_merged_document(requirements: Optional[str],
 
 async def run_cli(args):
     vision_out = await run_vision(args.image)
-
     assessments_blob: Optional[Dict[str, Any]] = None
+    live_blob = None
     if args.transcript or args.requirements:
         transcript = load_text_file(args.transcript)
         requirements = load_text_file(args.requirements)
         merged = build_merged_document(requirements, vision_out["summary"], transcript)
         assessments_blob = await run_assessments(merged)
+        live_blob = await run_live_coach(merged)
 
     final_payload: Dict[str, Any] = {
         "summary": vision_out["summary"],
@@ -307,6 +355,7 @@ async def run_cli(args):
         "diagram": vision_out.get("diagram"),
         "assessments": (assessments_blob or {}).get("assessments") if assessments_blob else None,
         "synthesis": (assessments_blob or {}).get("synthesis") if assessments_blob else None,
+        "live": live_blob,
     }
 
     print(json.dumps(final_payload, ensure_ascii=False))

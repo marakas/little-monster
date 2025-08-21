@@ -1,4 +1,3 @@
-// realtimeClient.ts
 import { RealtimeAgent, RealtimeSession } from "@openai/agents/realtime";
 import { tool } from "@openai/agents";
 import ffmpeg from "fluent-ffmpeg";
@@ -18,8 +17,32 @@ export function registerVisionProvider(fn: () => Promise<VisionReply>) {
   visionProvider = fn;
 }
 
+// allow external listeners to observe raw session events if needed
+export function onRealtimeEvent(cb: (ev: any) => void) {
+  (wsSession.on as any)("event", cb);
+}
+
 export const PHASES = ["intro", "whiteboard_gate", "interview"] as const;
 export type Phase = (typeof PHASES)[number];
+
+export type LiveAssessmentReply = {
+  ok: boolean;
+  live?: {
+    scores?: Array<{ category: string; score: number; comment: string }>;
+    top_gaps?: string[];
+    suggested_next_question?: string;
+  };
+  diagram_state?: "none" | "blank" | "has_content" | "unknown";
+  diagram_components_count?: number;
+  error?: string;
+};
+
+let assessmentProvider: (() => Promise<LiveAssessmentReply>) | null = null;
+export function registerAssessmentProvider(
+  fn: () => Promise<LiveAssessmentReply>
+) {
+  assessmentProvider = fn;
+}
 
 let currentPhase: Phase = "intro";
 
@@ -53,6 +76,7 @@ STICKY GUARDRAILS:
 - If the candidate proposes a different problem, reply briefly: "For calibration, let's stick with Instagram."
 - Keep responses concise (≤3 sentences) unless deeper detail is requested.
 - Use "request_vision_check" whenever the whiteboard isn’t clearly visible.
+- During interview, call "pull_live_assessment" roughly every 60–90 seconds or whenever the candidate finishes a major chunk (requirements, data model, feed, media pipeline). If the result includes "top_gaps", ask one targeted question that addresses the highest-priority gap. Use "suggested_next_question" if appropriate.
 `;
 
 const BASE_PROMPT = `
@@ -112,9 +136,87 @@ function makeInstructions(phase: Phase) {
     .join("\n\n")
     .trim();
 }
+
+// -----------------------------
+// Centralized response manager
+// -----------------------------
+type PendingReq = {
+  instructions?: string;
+  modalities?: ("audio" | "text")[];
+};
+
+class ResponseManager {
+  private inFlight = false;
+  private queue: PendingReq[] = [];
+  private lastEnqueueAt = 0;
+  private static ENQUEUE_COOLDOWN_MS = 350; // coalesce bursty triggers
+
+  request(req: PendingReq = {}) {
+    const now = Date.now();
+    if (now - this.lastEnqueueAt < ResponseManager.ENQUEUE_COOLDOWN_MS) return;
+    this.lastEnqueueAt = now;
+
+    if (!req.modalities || req.modalities.length === 0) {
+      req.modalities = ["audio", "text"];
+    }
+    this.queue.push(req);
+    this.pump();
+  }
+
+  pump() {
+    if (this.inFlight || this.queue.length === 0) return;
+    const req = this.queue.shift()!;
+    wsSession.transport.sendEvent({
+      type: "response.create",
+      response: {
+        modalities: req.modalities,
+        ...(req.instructions ? { instructions: req.instructions } : {}),
+      },
+    });
+    this.inFlight = true;
+  }
+
+  markStart() {
+    this.inFlight = true;
+  }
+
+  markDone() {
+    this.inFlight = false;
+    this.pump();
+  }
+}
+
+const responseMgr = new ResponseManager();
+
+export function requestModelResponse(opts?: PendingReq) {
+  responseMgr.request(opts || {});
+}
+
 // -----------------------------
 // Tools exposed to the model
 // -----------------------------
+const pullLiveAssessment = tool({
+  name: "pull_live_assessment",
+  description:
+    "Fetch the latest whiteboard+transcript assessment. Use this every ~60–90s during the interview or after big milestones. Returns gaps and a suggested next question.",
+  parameters: {
+    type: "object",
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
+  execute: async () => {
+    if (!assessmentProvider)
+      return { ok: false, error: "No assessment provider registered." };
+    try {
+      const res = await assessmentProvider();
+      return res;
+    } catch (e: any) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  },
+});
+
 const requestVisionCheck = tool({
   name: "request_vision_check",
   description:
@@ -125,7 +227,6 @@ const requestVisionCheck = tool({
     required: [],
     additionalProperties: false,
   },
-  // The model decides when to call it. We return structure the model can use.
   execute: async () => {
     if (!visionProvider) {
       return { ok: false, error: "Vision provider not registered." };
@@ -133,7 +234,6 @@ const requestVisionCheck = tool({
     try {
       const res = await visionProvider();
       console.log(`[tool] request_vision_check → ${JSON.stringify(res)}`);
-
       return { ok: true, ...res };
     } catch (e: any) {
       return { ok: false, error: String(e?.message || e) };
@@ -161,7 +261,8 @@ const advancePhase = tool({
       session: { instructions: makeInstructions(currentPhase) },
     });
 
-    safeCreateResponse({
+    // queue exactly one response safely
+    requestModelResponse({
       instructions:
         currentPhase === "whiteboard_gate"
           ? "Call tool request_vision_check now. If state is 'blank' or 'has_content', call advance_phase to 'interview'."
@@ -169,7 +270,7 @@ const advancePhase = tool({
     });
 
     if (currentPhase === "interview") {
-      safeCreateResponse({
+      requestModelResponse({
         instructions: `Stay on "${SCENARIO_TITLE}". Open with requirements gathering. Do not switch problems.`,
       });
     }
@@ -184,7 +285,7 @@ const advancePhase = tool({
 const agent = new RealtimeAgent({
   name: "Assistant",
   instructions: makeInstructions("intro"),
-  tools: [requestVisionCheck, advancePhase],
+  tools: [requestVisionCheck, advancePhase, pullLiveAssessment],
 });
 
 export const wsSession = new RealtimeSession(agent, {
@@ -193,41 +294,38 @@ export const wsSession = new RealtimeSession(agent, {
   config: {
     inputAudioFormat: "pcm16",
     outputAudioFormat: "pcm16",
+    inputAudioTranscription: {
+      model: "gpt-4o-transcribe",
+      language: "en",
+      // prompt: "",
+    },
     turnDetection: {
       type: "semantic_vad",
       eagerness: "medium",
-      createResponse: false,
+      createResponse: false, // keep manual control
       interruptResponse: true,
     },
   },
 });
 
-let responseInFlight = false;
-
+// wire responseMgr to session lifecycle + allow others to listen
 (wsSession.on as any)("event", (ev: any) => {
-  if (ev.type === "response.created") responseInFlight = true;
+  if (ev.type === "response.created") responseMgr.markStart();
   if (
     ev.type === "response.completed" ||
     ev.type === "response.failed" ||
     ev.type === "response.canceled"
-  )
-    responseInFlight = false;
+  ) {
+    responseMgr.markDone();
+  }
 });
-
-function safeCreateResponse(extra?: Partial<any>) {
-  if (responseInFlight) return; // drop instead of error-ing
-  wsSession.transport.sendEvent({
-    type: "response.create",
-    response: { modalities: ["audio", "text"], ...(extra || {}) },
-  });
-}
 
 wsSession.on("error", (e) =>
   console.error("Realtime session error:", JSON.stringify(e, null, 2))
 );
 
 // -----------------------------
-// Audio piping (unchanged)
+// Audio piping (agent -> user)
 // -----------------------------
 let playCb: ((buffer: ArrayBuffer) => void) | undefined;
 export function onRealtimeAudio(cb: (buffer: ArrayBuffer) => void) {
@@ -271,7 +369,7 @@ export async function initRealtime(apiKey: string) {
   }
   await wsSession.connect({ apiKey });
 
-  // Make sure the session has the current (intro) instructions
+  // Ensure current phase instructions are set (intro by default)
   wsSession.transport.sendEvent({
     type: "session.update",
     session: { instructions: makeInstructions(currentPhase) },
@@ -282,38 +380,40 @@ export async function startPhasedInterview() {
   await wsSession.sendMessage(
     `Begin Phase: intro. Scenario is fixed: ${SCENARIO_TITLE}.`
   );
+  // explicitly ask the model to speak the intro (queued safely)
+  requestModelResponse();
 }
 
 /* ---------- input audio commit helpers ---------- */
-let silenceTimer: NodeJS.Timeout | null = null;
-function scheduleCommit() {
-  if (silenceTimer) clearTimeout(silenceTimer);
-  silenceTimer = setTimeout(() => {
-    wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
-    wsSession.transport.sendEvent({
-      type: "response.create",
-      response: { modalities: ["audio", "text"] },
-    });
-  }, 600);
-}
-
 const INPUT_RATE = 16000;
 const MIN_COMMIT_MS = 120;
 const MIN_COMMIT_BYTES = Math.floor((INPUT_RATE * 2 * MIN_COMMIT_MS) / 1000);
 let bytesSinceCommit = 0;
+
 function canCommit() {
   return bytesSinceCommit >= MIN_COMMIT_BYTES;
 }
 function resetCommitBudget() {
   bytesSinceCommit = 0;
 }
+
 export function commitNow() {
   if (!canCommit()) return;
   wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
-  bytesSinceCommit = 0;
+  resetCommitBudget();
 
-  // create one response per commit, if none is in flight
-  safeCreateResponse();
+  // ask for one model turn; ResponseManager prevents collisions
+  requestModelResponse();
+}
+
+// (kept for completeness; prefer commitNow() where you control timing)
+let silenceTimer: NodeJS.Timeout | null = null;
+function scheduleCommit() {
+  if (silenceTimer) clearTimeout(silenceTimer);
+  silenceTimer = setTimeout(() => {
+    wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
+    requestModelResponse();
+  }, 600);
 }
 
 function bufferToArrayBuffer(buf: Buffer): ArrayBuffer {
@@ -361,8 +461,10 @@ export function sendRealtimeAudio(data: ArrayBuffer, inputSampleRate = 16000) {
   });
 }
 
-// Text nudge utility (still useful)
+// Text nudge utility
 export async function sendUserText(text: string) {
   if (!text) return;
   await wsSession.sendMessage(text);
+  // if you want it spoken immediately:
+  requestModelResponse();
 }

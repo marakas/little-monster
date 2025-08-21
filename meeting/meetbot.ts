@@ -23,8 +23,15 @@ import { writeWavFile } from "./upsample.ts";
 import {
   registerVisionProvider,
   startPhasedInterview,
+  registerAssessmentProvider,
+  onRealtimeEvent,
 } from "./realtimeClient.ts";
-import { analyzeScreenshot, type VisionResult } from "./pythonBridge.ts";
+
+import {
+  analyzeScreenshot,
+  analyzeSnapshot,
+  type VisionResult,
+} from "./pythonBridge.ts";
 
 import ffmpeg from "fluent-ffmpeg";
 // import puppeteer from 'puppeteer-extra'
@@ -55,10 +62,42 @@ import { enableStreamingMic } from "./micStreaming.ts";
 
 let wasSpeaking = false;
 let lastSpeechAt = Date.now();
+let rollingTranscript = "";
 
 const recordingsDir = "./recordings";
 if (!fs.existsSync(recordingsDir)) {
   fs.mkdirSync(recordingsDir, { recursive: true });
+}
+
+let lastAssessAt = 0;
+const ASSESS_COOLDOWN_MS = 55_000;
+
+// Instagram rubric (what “good” looks like) — keep short & concrete
+const INSTAGRAM_REQUIREMENTS = `
+# Scenario: Design Instagram
+Functional:
+- Users post photos/videos with captions, follow, like, comment, notifications
+- Home feed: personalized, ranked, infinite scroll
+- Search/explore; user profiles; basic moderation
+
+Non-functional:
+- Tens of millions DAU, global; low latency home feed (<200ms P50 at edge)
+- High availability; eventual consistency OK for counts/timelines
+- Media heavy: upload, transcode, CDN
+
+Key areas expected:
+- Data model (users, posts, follows, likes, comments), indexes & hot keys
+- Media pipeline (upload, virus scan, transcode variants, metadata store, CDN)
+- Feed generation (push/pull, fanout/fanin, ranking features, pagination)
+- Caching (CDN, Redis timelines), invalidation strategy
+- Sharding/partitioning; backpressure; queues; idempotency; retries
+- Observability (metrics/traces/alerts) and degradation levers
+- AuthN/Z, privacy, abuse mitigation basics
+`.trim();
+
+function appendTranscript(line: string) {
+  if (!line) return;
+  rollingTranscript += (rollingTranscript ? "\n" : "") + line.trim();
 }
 
 function chunkHasVoice16k(ab: ArrayBuffer): boolean {
@@ -432,6 +471,46 @@ export async function startMeetBot(
       return reply;
     });
 
+    registerAssessmentProvider(async () => {
+      const now = Date.now();
+      if (now - lastAssessAt < ASSESS_COOLDOWN_MS) {
+        return { ok: true, live: null }; // quiet success to avoid spamming the model
+      }
+      lastAssessAt = now;
+
+      const imagePath = latestScreenshotPath;
+      if (!imagePath) {
+        return {
+          ok: true,
+          live: null,
+          diagram_state: "unknown",
+          diagram_components_count: 0,
+        };
+      }
+
+      try {
+        const out = await analyzeSnapshot({
+          imagePath,
+          transcriptText: rollingTranscript || "",
+          requirementsText: INSTAGRAM_REQUIREMENTS,
+        });
+
+        const diagramState = out.whiteboard?.state ?? "unknown";
+        const compCount = Array.isArray(out.diagram?.components)
+          ? out.diagram.components.length
+          : 0;
+
+        return {
+          ok: true,
+          live: out.live || null,
+          diagram_state: diagramState,
+          diagram_components_count: compCount,
+        };
+      } catch (e: any) {
+        return { ok: false, error: String(e?.message || e) };
+      }
+    });
+
     // ✅ Store platform in state for use across modules
     state.meetingPlatform = meetingPlatform;
 
@@ -455,6 +534,27 @@ export async function startMeetBot(
     }
 
     await initRealtime(process.env.OPENAI_API_KEY!);
+
+    // Subscribe to Realtime events (transcripts, etc.)
+    onRealtimeEvent((ev: any) => {
+      // Depending on SDK version this name can differ.
+      if (
+        ev?.type === "input_audio_transcription.completed" &&
+        ev?.transcript
+      ) {
+        appendTranscript(ev.transcript);
+
+        // (optional) also persist to your final transcription log
+        try {
+          if (state.transcriptionLogPath) {
+            fs.appendFileSync(state.transcriptionLogPath, ev.transcript + "\n");
+          }
+        } catch {}
+      }
+
+      // Debug unknown events once:
+      // if (!ev || !ev.type) console.log("RT event:", ev);
+    });
 
     // Start enhanced audio processing
     startAudioProcessing();
