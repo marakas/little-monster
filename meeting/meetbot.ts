@@ -680,27 +680,52 @@ export async function startMeetBot(
     await enableStreamingMic(page);
     let debugCounter = 0;
 
-    onRealtimeAudio(async (ab: ArrayBuffer) => {
+    // --- just above onRealtimeAudio(...) in startMeetBot:
+    let outPrimed = false;
+    let outWarmup: number[] = [];
+    const MODEL_OUT_RATE = 24000; // server sends 24 kHz PCM16
+    const PREROLL_MS = 220; // 200–250ms works well
+    const PREROLL_SAMPLES = Math.floor((MODEL_OUT_RATE * PREROLL_MS) / 1000);
+
+    // --- replace your onRealtimeAudio callback:
+    onRealtimeAudio((ab: ArrayBuffer) => {
       const int16 = new Int16Array(ab);
-      const modelOutRate = 24000; // ← key: model replies are 24 kHz
 
-      // (optional) debug wav
-      writeWavFile(
-        Buffer.from(int16.buffer, int16.byteOffset, int16.byteLength),
-        modelOutRate,
-        path.join(
-          "recordings",
-          `rt_reply_${Date.now()}_${modelOutRate / 1000}k.wav`
-        )
-      );
+      // OPTIONAL: debug only; guard the disk write behind an env flag
+      if (process.env.RT_DEBUG_WAV === "1") {
+        try {
+          writeWavFile(
+            Buffer.from(int16.buffer, int16.byteOffset, int16.byteLength),
+            MODEL_OUT_RATE,
+            path.join(
+              "recordings",
+              `rt_reply_${Date.now()}_${MODEL_OUT_RATE / 1000}k.wav`
+            )
+          );
+        } catch {}
+      }
 
-      // Tell the browser the *correct* source rate
-      await state.page!.evaluate(
+      if (!outPrimed) {
+        // accumulate until we have enough to cover the initial WebRTC pull
+        for (let i = 0; i < int16.length; i++) outWarmup.push(int16[i]);
+        if (outWarmup.length >= PREROLL_SAMPLES) {
+          const firstBurst = outWarmup.splice(0, outWarmup.length); // flush all we have
+          // fire-and-forget to avoid serializing on small chunks
+          // (enqueuePcmAt(rate, Int16[]))
+          void state.page!.evaluate(
+            ({ rate, samples }) => (window as any).enqueuePcmAt(rate, samples),
+            { rate: MODEL_OUT_RATE, samples: firstBurst }
+          );
+          outPrimed = true;
+        }
+        return;
+      }
+
+      // after priming, stream normally; avoid await to keep up under burst
+      void state.page!.evaluate(
         ({ rate, samples }) => (window as any).enqueuePcmAt(rate, samples),
-        { rate: modelOutRate, samples: Array.from(int16) }
+        { rate: MODEL_OUT_RATE, samples: Array.from(int16) }
       );
-
-      console.log(`🔊 injected ${int16.length} samples @ ${modelOutRate} Hz`);
     });
     state.page = page;
 

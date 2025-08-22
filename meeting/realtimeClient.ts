@@ -310,13 +310,35 @@ export const wsSession = new RealtimeSession(agent, {
 
 // wire responseMgr to session lifecycle + allow others to listen
 (wsSession.on as any)("event", (ev: any) => {
+  // When a model response starts/ends
   if (ev.type === "response.created") responseMgr.markStart();
+
   if (
     ev.type === "response.completed" ||
     ev.type === "response.failed" ||
     ev.type === "response.canceled"
   ) {
     responseMgr.markDone();
+  }
+
+  // If server reports there's already an active response, treat as inFlight
+  if (
+    ev.type === "error" &&
+    ev?.error?.error?.code === "conversation_already_has_active_response"
+  ) {
+    responseMgr.markStart();
+  }
+
+  // Trigger agent speech only AFTER ASR finished for the committed chunk
+  if (ev?.type === "input_audio_transcription.completed") {
+    if (waitingForTranscript) {
+      waitingForTranscript = false;
+      if (transcriptFallbackTimer) {
+        clearTimeout(transcriptFallbackTimer);
+        transcriptFallbackTimer = null;
+      }
+      requestModelResponse();
+    }
   }
 });
 
@@ -386,24 +408,52 @@ export async function startPhasedInterview() {
 
 /* ---------- input audio commit helpers ---------- */
 const INPUT_RATE = 16000;
-const MIN_COMMIT_MS = 120;
-const MIN_COMMIT_BYTES = Math.floor((INPUT_RATE * 2 * MIN_COMMIT_MS) / 1000);
-let bytesSinceCommit = 0;
+const MIN_COMMIT_MS = 180; // bumped to reduce empty commits
+const SILENCE_MS = 450; // user must be quiet for this long
 
+// Keep bytesSinceCommit as server-truth of what we've appended (16k s16le)
+let bytesSinceCommit = 0;
+let lastAppendAt = 0; // last time we appended audio to server
+let voicedSinceLastCommit = false; // whether we appended voiced frames
+let waitingForTranscript = false; // set true when we commit
+let transcriptFallbackTimer: NodeJS.Timeout | null = null;
+
+// maintain legacy constant for compatibility (unused by logic directly)
+const MIN_COMMIT_BYTES = Math.floor((INPUT_RATE * 2 * MIN_COMMIT_MS) / 1000);
+
+// Backwards-compatible helpers (now advisory)
 function canCommit() {
-  return bytesSinceCommit >= MIN_COMMIT_BYTES;
+  const msBuffered =
+    (bytesSinceCommit / 2 /* bytes→samples */ / INPUT_RATE) * 1000;
+  const quietFor = Date.now() - lastAppendAt;
+  return (
+    voicedSinceLastCommit &&
+    msBuffered >= MIN_COMMIT_MS &&
+    quietFor >= SILENCE_MS
+  );
 }
 function resetCommitBudget() {
   bytesSinceCommit = 0;
+  voicedSinceLastCommit = false;
 }
 
 export function commitNow() {
+  // Gate by what the server has ACTUALLY received (post-resample)
   if (!canCommit()) return;
-  wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
-  resetCommitBudget();
 
-  // ask for one model turn; ResponseManager prevents collisions
-  requestModelResponse();
+  wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
+
+  // Wait for ASR to finish before creating the response
+  waitingForTranscript = true;
+  if (transcriptFallbackTimer) clearTimeout(transcriptFallbackTimer);
+  transcriptFallbackTimer = setTimeout(() => {
+    if (waitingForTranscript) {
+      waitingForTranscript = false;
+      requestModelResponse(); // backstop if ASR event is delayed
+    }
+  }, 1800);
+
+  resetCommitBudget();
 }
 
 // (kept for completeness; prefer commitNow() where you control timing)
@@ -411,8 +461,8 @@ let silenceTimer: NodeJS.Timeout | null = null;
 function scheduleCommit() {
   if (silenceTimer) clearTimeout(silenceTimer);
   silenceTimer = setTimeout(() => {
-    wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
-    requestModelResponse();
+    // use gated commit
+    commitNow();
   }, 600);
 }
 
@@ -421,9 +471,30 @@ function bufferToArrayBuffer(buf: Buffer): ArrayBuffer {
   new Uint8Array(ab).set(buf);
   return ab;
 }
+
+// send16k now *also* updates server-truth counters & light VAD
 function send16k(buf: Buffer) {
-  bytesSinceCommit += buf.length;
   wsSession.sendAudio(bufferToArrayBuffer(buf));
+
+  // update counters based on what we really appended
+  bytesSinceCommit += buf.length;
+  lastAppendAt = Date.now();
+
+  // simple RMS to mark that this chunk had voice-like energy
+  try {
+    const v = new Int16Array(buf.buffer, buf.byteOffset, buf.byteLength / 2);
+    let sum = 0,
+      n = 0;
+    for (let i = 0; i < v.length; i += 16) {
+      const s = v[i];
+      sum += s * s;
+      n++;
+    }
+    const rms = Math.sqrt(sum / Math.max(1, n)); // 0..32767
+    if (rms > 220) voicedSinceLastCommit = true; // tune 200–280 if needed
+  } catch {
+    /* noop */
+  }
 }
 
 export function sendRealtimeAudio(data: ArrayBuffer, inputSampleRate = 16000) {
