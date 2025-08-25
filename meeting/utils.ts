@@ -7,7 +7,6 @@ import {
 } from "./constants.ts";
 import state, { type Page, setHasJoined } from "./state.ts";
 import { stopMeetBot } from "./stop_meet_bot.ts";
-import audioProcessor from "./audio-processor.ts";
 
 let lastParticipantCheck = Date.now();
 let previousSpeaker = "";
@@ -210,15 +209,6 @@ export function batchAudioChunk(chunk: Uint8Array, sampleRate: number = 16000) {
 
   // Update previous speaker
   previousSpeaker = currentSpeaker;
-
-  // Log processing stats more frequently for debugging
-  if (Math.random() < 0.05) {
-    // ~5% chance to log stats
-    const stats = audioProcessor.getStats();
-    console.log(
-      `📊 [${BOT_ID}] Audio processor stats: buffer=${stats.bufferDurationMs}ms, speech=${stats.isSpeechActive}, ratio=${stats.speechRatio}`
-    );
-  }
 }
 
 // Helper delay function
@@ -1194,10 +1184,6 @@ export async function monitorKickout(page: Page) {
         await delay(5000);
 
         setHasJoined(true);
-
-        // 🛡️ Mark audio processor that we've joined the meeting (reduce false positives)
-        const { audioProcessor } = await import("./audio-processor.ts");
-        audioProcessor.markMeetingJoined();
 
         // 👉 START monitorParticipants
         monitorParticipants(page);

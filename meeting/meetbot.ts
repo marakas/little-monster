@@ -51,7 +51,6 @@ import {
   type MeetingPlatform,
 } from "./utils.ts";
 
-import audioProcessor from "./audio-processor.ts";
 import { joinGoogleMeet, clickMeetGotIt } from "./platforms/joinGoogleMeet.ts";
 import { enableStreamingMic } from "./micStreaming.ts";
 
@@ -118,9 +117,6 @@ function startAudioProcessing() {
   }
 
   console.log("🎤 Starting enhanced audio processing...");
-
-  // Reset audio processor for new session
-  audioProcessor.reset();
 
   // Balanced monitoring with buffer management
   state.audioProcessingInterval = setInterval(() => {
