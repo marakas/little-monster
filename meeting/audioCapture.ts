@@ -16,9 +16,11 @@ export async function audioCapture(page: Page, platform: string) {
           const uint8 = new Uint8Array(audioChunk);
           // ✅ tell the sender the true rate so it resamples 48k -> 16k
           sendRealtimeAudio(uint8.buffer, browserSampleRate);
+          
           console.log(
             `✅ handleRealAudioChunk: Sent ${uint8.byteLength} bytes to Realtime @ ${browserSampleRate} Hz`
           );
+          
         }
       );
     } catch (exposeError) {
@@ -27,7 +29,7 @@ export async function audioCapture(page: Page, platform: string) {
       );
     }
 
-    // ✅ **Execute Browser-Side Audio Capture**
+    // ✅ **Execute Node-Side Audio Capture**
     const audioResult = await Promise.race([
       page.evaluate((targetSampleRate) => {
         return new Promise((resolve) => {
@@ -101,6 +103,7 @@ export async function audioCapture(page: Page, platform: string) {
                         }
 
                         if ((window as any).handleRealAudioChunk) {
+                          console.log("send audio from AudioCapture");
                           (window as any).handleRealAudioChunk(
                             Array.from(new Uint8Array(int16Array.buffer)),
                             audioContext.sampleRate

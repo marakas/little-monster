@@ -61,7 +61,7 @@ import {
 } from "./utils.ts";
 
 import audioProcessor from "./audio-processor.ts";
-import { joinGoogleMeet } from "./platforms/joinGoogleMeet.ts";
+import { joinGoogleMeet, clickMeetGotIt } from "./platforms/joinGoogleMeet.ts";
 import { enableStreamingMic } from "./micStreaming.ts";
 
 let wasSpeaking = false;
@@ -501,6 +501,7 @@ export async function startMeetBot(
       const ab = new Uint8Array(chunk).buffer;
       const humanVoiced = chunkHasVoice16k(ab);
       if (humanVoiced && !isAgentSpeaking()) {
+        console.log("startMeetBot :  state.activeProcess.pipe");
         sendRealtimeAudio(ab, 16000);
         wasSpeaking = true;
         lastSpeechAt = Date.now();
@@ -571,7 +572,8 @@ export async function startMeetBot(
       const maybeAnalyze = async (filePath: string) => {
         if (!filePath.toLowerCase().endsWith(".jpg")) return;
         latestScreenshotPath = filePath;
-
+        if (!state.dismissed) clickMeetGotIt(state.page);
+        console.log("state dismissed: ", state.dismissed);
         console.log(`👀 [vision] file event: ${filePath}`);
         const now = Date.now();
         if (now - lastRun < MIN_ANALYSIS_INTERVAL_MS) {

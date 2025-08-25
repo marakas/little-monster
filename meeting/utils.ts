@@ -1,5 +1,4 @@
 import assert from "node:assert";
-import { initRealtime, sendRealtimeAudio } from "./realtimeClient.ts";
 
 import {
   BOT_ID,
@@ -9,7 +8,6 @@ import {
 import state, { type Page } from "./state.ts";
 import { stopMeetBot } from "./stop_meet_bot.ts";
 import audioProcessor from "./audio-processor.ts";
-import { sendToWhisper } from "./whisper.ts";
 
 let lastParticipantCheck = Date.now();
 let previousSpeaker = "";
@@ -208,21 +206,6 @@ export function batchAudioChunk(chunk: Uint8Array, sampleRate: number = 16000) {
         )}s (${totalSizeMB}MB) buffered | Speakers: ${speakerList}`
       );
     }
-  }
-
-  // Continue with standard chunked processing (always runs)
-  // Use enhanced audio processor (with dynamic sample rate)
-  const result = audioProcessor.processAudioChunk(
-    audioBuffer,
-    currentSpeaker,
-    speakerChanged,
-    sampleRate
-  );
-
-  if (result.shouldTranscribe && result.processedAudio.length > 0) {
-    console.log(`🎯 Enhanced processing decision: ${result.reason}`);
-    //sendToWhisper(result.processedAudio, 0, false, sampleRate); // Pass sample rate to sendToWhisper
-    sendRealtimeAudio(Uint8Array.from(result.processedAudio).buffer);
   }
 
   // Update previous speaker

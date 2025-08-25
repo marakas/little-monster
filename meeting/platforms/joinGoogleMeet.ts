@@ -2,6 +2,156 @@ import { delay } from "../utils.ts";
 import state, { type Page } from "../state.ts";
 import { stopAudioProcessing, stopMeetBot } from "../stop_meet_bot.ts";
 
+export async function clickMeetGotIt(page: Page) {
+  const TIMEOUT_MS = 8000;
+  const POLL_MS = 200;
+  const GOT_IT_TEXTS = [
+    "got it",
+    "ok",
+    "okay",
+    "understood",
+    "close",
+    "了解",
+    "わかりました",
+    "閉じる",
+    "確認",
+  ];
+
+  const delayMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const tryInContext = async (ctx: any): Promise<boolean> => {
+    // 1) Specific MDC "ok" inside Meet dialog
+    const specificSel =
+      "div.VfPpkd-P5QLlc[role='dialog'] button[data-mdc-dialog-action='ok'], " +
+      "div[role='dialog'] button[data-mdc-dialog-action='ok']";
+    const btn = await ctx.$?.(specificSel);
+    if (btn) {
+      try {
+        await btn.click({ delay: 15 });
+        return true;
+      } catch {}
+      try {
+        await btn.evaluate((el: HTMLElement) => el.click());
+        return true;
+      } catch {}
+    }
+
+    // 2) Any visible button with a "Got it"-like label (multi-locale)
+    const clicked = await ctx.evaluate?.((texts: string[]) => {
+      const isVisible = (el: Element) => {
+        const s = getComputedStyle(el as HTMLElement);
+        const r = (el as HTMLElement).getBoundingClientRect();
+        return (
+          s.visibility !== "hidden" &&
+          s.display !== "none" &&
+          r.width > 0 &&
+          r.height > 0
+        );
+      };
+
+      const dialogs = Array.from(
+        document.querySelectorAll("div[role='dialog']")
+      );
+      for (const dlg of dialogs) {
+        const buttons = Array.from(dlg.querySelectorAll("button"));
+        for (const b of buttons) {
+          const raw = (b.textContent || "").trim();
+          const txt = raw.toLowerCase();
+          const spanTxt = (b.querySelector("span")?.textContent || "")
+            .trim()
+            .toLowerCase();
+          if (
+            isVisible(b) &&
+            (texts.some((t) => txt.includes(t)) ||
+              texts.some((t) => spanTxt.includes(t)))
+          ) {
+            (b as HTMLElement).click();
+            return true;
+          }
+        }
+      }
+      return false;
+    }, GOT_IT_TEXTS);
+
+    if (clicked) return true;
+
+    // 3) Enter to activate default dialog button (MDC sets default focus attributes)
+    try {
+      await page.keyboard?.press?.("Enter");
+      await delayMs(50);
+    } catch {}
+    return false;
+  };
+
+  const tryEverywhere = async (): Promise<boolean> => {
+    // main document
+    if (await tryInContext(page)) return true;
+
+    // iframes (Meet sometimes renders overlays inside frames)
+    const frames: any[] =
+      typeof page.frames === "function" ? page.frames() : [];
+    for (const f of frames) {
+      try {
+        if (await tryInContext(f)) return true;
+      } catch {}
+    }
+    return false;
+  };
+
+  const endAt = Date.now() + TIMEOUT_MS;
+  let dismissed = false;
+
+  // Poll until found/dismissed or timeout
+  while (Date.now() < endAt && !dismissed) {
+    // If no dialog exists anymore, we’re done
+    const hasDialog = await page.evaluate(
+      () =>
+        !!document.querySelector(
+          "div[role='dialog'], div.VfPpkd-P5QLlc[role='dialog']"
+        )
+    );
+    if (!hasDialog) break;
+
+    dismissed = await tryEverywhere();
+    if (!dismissed) await delayMs(POLL_MS);
+  }
+
+  // Verify removal
+  const stillThere = await page.evaluate(
+    () =>
+      !!document.querySelector(
+        "div[role='dialog'], div.VfPpkd-P5QLlc[role='dialog']"
+      )
+  );
+
+  if (!stillThere) {
+    console.log("✅ Dismissed Meet modal.");
+    state.dismissed = true;
+    await delayMs(150);
+    return;
+  }
+
+  // 🔥 Final fallback: force remove overlay (automation-safe)
+  const removed = await page.evaluate(() => {
+    let removedAny = false;
+    document
+      .querySelectorAll(
+        "div.VfPpkd-wzTsW, div.VfPpkd-P5QLlc[role='dialog'], div[role='dialog']"
+      )
+      .forEach((el) => {
+        (el as HTMLElement).remove();
+        removedAny = true;
+      });
+    return removedAny;
+  });
+
+  if (removed) {
+    console.log("🧹 Force-removed Meet modal overlay.");
+  } else {
+    console.log("⚠️ Could not dismiss Meet modal (no button found).");
+  }
+}
+
 export async function joinGoogleMeet(page: Page, meetUrl: string) {
   console.log(`🚀 Starting Google Meet join process for: ${meetUrl}`);
   console.log(`🔍 Current page URL: ${page.url()}`);
@@ -539,5 +689,11 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
     console.log(
       "⚠️ No recording consent modal found (meeting may not be recorded)."
     );
+  }
+
+  try {
+    await clickMeetGotIt(page);
+  } catch (e) {
+    console.log("⚠️ Failed to dismiss 'Got it' dialog:", e);
   }
 }

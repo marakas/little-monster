@@ -440,7 +440,7 @@ function resetCommitBudget() {
 export function commitNow() {
   // Gate by what the server has ACTUALLY received (post-resample)
   if (!canCommit()) return;
-
+  console.log("commitNow");
   wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
 
   // Wait for ASR to finish before creating the response
@@ -458,13 +458,14 @@ export function commitNow() {
 
 // (kept for completeness; prefer commitNow() where you control timing)
 let silenceTimer: NodeJS.Timeout | null = null;
+/*
 function scheduleCommit() {
   if (silenceTimer) clearTimeout(silenceTimer);
   silenceTimer = setTimeout(() => {
     // use gated commit
     commitNow();
   }, 600);
-}
+}*/
 
 function bufferToArrayBuffer(buf: Buffer): ArrayBuffer {
   const ab = new ArrayBuffer(buf.length);

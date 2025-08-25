@@ -17,6 +17,7 @@ export default {
   audioProcessingInterval: null as NodeJS.Timeout | null, // Audio processing interval
   currentRecordingPath: null as string | null, // Path to the recorded video/audio
   currentSpeaker: "User", // Current active speaker
+  dismissed: false, // dismissed the 'people may see your screen differently' popup
   hasJoined: false,
   heartbeatInterval: null as NodeJS.Timeout | null, // Heartbeat updater interval
   isBotPaused: false, // Flag to track bot pausing
