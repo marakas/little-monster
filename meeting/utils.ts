@@ -5,7 +5,7 @@ import {
   SILENCE_THRESHOLD,
   ENABLE_FULL_AUDIO_ACCUMULATION,
 } from "./constants.ts";
-import state, { type Page } from "./state.ts";
+import state, { type Page, setHasJoined } from "./state.ts";
 import { stopMeetBot } from "./stop_meet_bot.ts";
 import audioProcessor from "./audio-processor.ts";
 
@@ -1193,7 +1193,7 @@ export async function monitorKickout(page: Page) {
         );
         await delay(5000);
 
-        state.hasJoined = true;
+        setHasJoined(true);
 
         // 🛡️ Mark audio processor that we've joined the meeting (reduce false positives)
         const { audioProcessor } = await import("./audio-processor.ts");

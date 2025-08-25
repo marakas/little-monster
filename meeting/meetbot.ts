@@ -31,30 +31,21 @@ import {
   onRealtimeEvent,
 } from "./realtimeClient.ts";
 
-import {
-  analyzeScreenshot,
-  analyzeSnapshot,
-  type VisionResult,
-} from "./pythonBridge.ts";
+import { analyzeScreenshot, analyzeSnapshot } from "./pythonBridge.ts";
 
 import ffmpeg from "fluent-ffmpeg";
-// import puppeteer from 'puppeteer-extra'
-// import StealthPlugin from 'puppeteer-extra-plugin-stealth'
-import { getStream, launch } from "puppeteer-stream";
+import { launch } from "puppeteer-stream";
 
 import {
   MEET_BOT_MAX_DURATION,
   ENABLE_FULL_AUDIO_ACCUMULATION,
 } from "./constants.ts";
 import { env } from "./env.ts";
-import state, { type Page } from "./state.ts";
+import state, { waitUntilJoined } from "./state.ts";
 import { stopAudioProcessing, stopMeetBot } from "./stop_meet_bot.ts";
 import {
   delay,
   monitorKickout,
-  monitorSpeakers,
-  openChatWindow,
-  sendChatMessage,
   detectMeetingPlatform,
   transformZoomUrl,
   type MeetingPlatform,
@@ -573,7 +564,7 @@ export async function startMeetBot(
         if (!filePath.toLowerCase().endsWith(".jpg")) return;
         latestScreenshotPath = filePath;
         if (!state.dismissed) clickMeetGotIt(state.page);
-        console.log("state dismissed: ", state.dismissed);
+        //console.log("state dismissed: ", state.dismissed);
         console.log(`👀 [vision] file event: ${filePath}`);
         const now = Date.now();
         if (now - lastRun < MIN_ANALYSIS_INTERVAL_MS) {
@@ -626,6 +617,7 @@ export async function startMeetBot(
       }, FALLBACK_SCAN_SEC * 1000);
     }
 
+    await waitUntilJoined(120_000);
     await startPhasedInterview();
 
     // ✅ **Auto-stop the bot after the maximum duration**

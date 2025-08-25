@@ -1,14 +1,17 @@
 import type { Transform } from "node:stream";
-
 import type { FfmpegCommand } from "fluent-ffmpeg";
 import type { launch } from "puppeteer-stream";
+import { EventEmitter } from "node:events";
 
 export type Browser = Awaited<ReturnType<typeof launch>>;
 export type Page = Awaited<ReturnType<Browser["newPage"]>>;
 
+// Lightweight event bus for state changes
+export const stateEvents = new EventEmitter();
+
 // Shared global variables
 // Shared global state variables
-export default {
+const state = {
   activeBrowser: null as Browser | null, // Active browser process
   activeProcess: null as FfmpegCommand | null, // Active recording process
   activeRecordings: {} as Record<string, (() => void) | null>, // store active recording processes
@@ -55,3 +58,29 @@ export default {
   // Audio sample rate tracking
   currentAudioSampleRate: 16000, // Current audio sample rate (16000 Hz for Google Meet/Teams, 44100 Hz for Zoom)
 };
+export default state;
+
+export function setHasJoined(v: boolean) {
+  const prev = state.hasJoined;
+  state.hasJoined = v;
+  if (v && !prev) stateEvents.emit("joined");
+}
+
+/** Promise that resolves when we’re in the meeting (or immediately if already true) */
+export function waitUntilJoined(timeoutMs = 90_000): Promise<void> {
+  if (state.hasJoined) return Promise.resolve();
+
+  return new Promise<void>((resolve, reject) => {
+    const onJoin = () => {
+      clearTimeout(timer);
+      stateEvents.off("joined", onJoin);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      stateEvents.off("joined", onJoin);
+      reject(new Error("Timed out waiting to join the meeting"));
+    }, timeoutMs);
+
+    stateEvents.once("joined", onJoin);
+  });
+}

@@ -6,6 +6,7 @@ import { PassThrough } from "stream";
 
 ffmpeg.setFfmpegPath(ffmpegPath!);
 
+let _interviewStarted = false;
 // -----------------------------
 // Phase plumbing (inside agent)
 // -----------------------------
@@ -399,6 +400,9 @@ export async function initRealtime(apiKey: string) {
 }
 
 export async function startPhasedInterview() {
+  if (_interviewStarted) return;
+  _interviewStarted = true;
+
   await wsSession.sendMessage(
     `Begin Phase: intro. Scenario is fixed: ${SCENARIO_TITLE}.`
   );
