@@ -1,10 +1,10 @@
-import type { Transform } from 'node:stream'
+import type { Transform } from "node:stream";
 
-import type { FfmpegCommand } from 'fluent-ffmpeg'
-import type { launch } from 'puppeteer-stream'
+import type { FfmpegCommand } from "fluent-ffmpeg";
+import type { launch } from "puppeteer-stream";
 
-export type Browser = Awaited<ReturnType<typeof launch>>
-export type Page = Awaited<ReturnType<Browser['newPage']>>
+export type Browser = Awaited<ReturnType<typeof launch>>;
+export type Page = Awaited<ReturnType<Browser["newPage"]>>;
 
 // Shared global variables
 // Shared global state variables
@@ -16,7 +16,7 @@ export default {
   audioBuffer: Buffer.alloc(0), // Shared audio buffer
   audioProcessingInterval: null as NodeJS.Timeout | null, // Audio processing interval
   currentRecordingPath: null as string | null, // Path to the recorded video/audio
-  currentSpeaker: 'User', // Current active speaker
+  currentSpeaker: "User", // Current active speaker
   hasJoined: false,
   heartbeatInterval: null as NodeJS.Timeout | null, // Heartbeat updater interval
   isBotPaused: false, // Flag to track bot pausing
@@ -47,11 +47,10 @@ export default {
   lastNoSpeakerLogTime: 0, // Last time we logged "no speakers" message
   // Audio simulation cleanup
   audioSimulationCleanup: null as (() => void) | null, // Function to cleanup audio simulation
-  isUsingSimulatedAudio: false, // Flag to indicate if we're using simulated audio (bypass FFmpeg)
   // Platform information for audio processing
-  meetingPlatform: 'google-meet' as string, // Current meeting platform (affects audio processing)
+  meetingPlatform: "google-meet" as string, // Current meeting platform (affects audio processing)
   // Modal suppression for Google Meet
   modalSuppressionInterval: null as NodeJS.Timeout | null, // Interval for continuous modal removal
   // Audio sample rate tracking
   currentAudioSampleRate: 16000, // Current audio sample rate (16000 Hz for Google Meet/Teams, 44100 Hz for Zoom)
-}
+};

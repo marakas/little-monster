@@ -5,7 +5,7 @@ import * as amqp from "amqplib";
 import { registerCleanup } from "./cleanup.ts";
 import { BOT_ID } from "./constants.ts";
 import { registerMeeting, startHeartbeatUpdater } from "./dynamo.ts";
-import { pauseMeetBot, resumeMeetBot, startMeetBot } from "./meetbot.ts";
+import { startMeetBot } from "./meetbot.ts";
 import {
   connect as connectToMessageBroker,
   state as messageBrokerState,
@@ -185,28 +185,6 @@ function handleMeetingCommand(msg: amqp.ConsumeMessage) {
   let handled = false;
 
   switch (command) {
-    case "pause":
-      if (
-        state.isBotRunning &&
-        state.meetingId === meetingId &&
-        !state.isBotPaused
-      ) {
-        handled = true;
-        console.log(`⏸️ Pausing meeting ${meetingId}`);
-        pauseMeetBot();
-      }
-      break;
-    case "resume":
-      if (
-        state.isBotRunning &&
-        state.meetingId === meetingId &&
-        state.isBotPaused
-      ) {
-        handled = true;
-        console.log(`▶️ Resuming meeting ${meetingId}`);
-        resumeMeetBot();
-      }
-      break;
     case "stop":
       if (state.isBotRunning && state.meetingId === meetingId) {
         handled = true;
@@ -295,18 +273,6 @@ app.post("/local/start", async (req, res) => {
 app.post("/local/stop", async (req, res) => {
   if (!state.isBotRunning) return res.json({ ok: true, note: "not running" });
   await stopMeetBot();
-  return res.json({ ok: true });
-});
-
-app.post("/local/pause", async (_req, res) => {
-  if (!state.isBotRunning || state.isBotPaused) return res.json({ ok: true });
-  await pauseMeetBot();
-  return res.json({ ok: true });
-});
-
-app.post("/local/resume", async (_req, res) => {
-  if (!state.isBotRunning || !state.isBotPaused) return res.json({ ok: true });
-  await resumeMeetBot();
   return res.json({ ok: true });
 });
 
