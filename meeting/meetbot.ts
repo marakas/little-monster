@@ -266,6 +266,7 @@ export async function startMeetBot(
 
     await initRealtime(process.env.OPENAI_API_KEY!);
 
+    let lastTtsAt = 0;
     // Subscribe to Realtime events (transcripts, etc.)
     onRealtimeEvent((ev: any) => {
       // Depending on SDK version this name can differ.
@@ -281,6 +282,12 @@ export async function startMeetBot(
             fs.appendFileSync(state.transcriptionLogPath, ev.transcript + "\n");
           }
         } catch {}
+      }
+
+      if (ev?.type === "response.created") {
+        // new utterance -> re-prime
+        outPrimed = false;
+        outWarmup.length = 0;
       }
 
       // Debug unknown events once:
@@ -419,6 +426,14 @@ export async function startMeetBot(
     const PREROLL_SAMPLES = Math.floor((MODEL_OUT_RATE * PREROLL_MS) / 1000);
 
     onRealtimeAudio((ab: ArrayBuffer) => {
+      const now = Date.now();
+      if (now - lastTtsAt > 250) {
+        // gap detector between chunks/utterances
+        outPrimed = false;
+        outWarmup.length = 0;
+      }
+      lastTtsAt = now;
+
       const int16 = new Int16Array(ab);
 
       // OPTIONAL: debug only; guard the disk write behind an env flag

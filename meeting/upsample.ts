@@ -5,35 +5,6 @@ import fs from "fs";
 
 ffmpeg.setFfmpegPath(ffmpegPath!);
 
-/**
- * Upsample raw PCM16 mono from inputRate → outputRate (default 24k → 48k).
- */
-export async function upsamplePCM16Buffer(
-  inputBuffer: Buffer,
-  inputRate = 24000,
-  outputRate = 48000
-): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const inputStream = new PassThrough();
-    const outputStream = new PassThrough();
-    const chunks: Buffer[] = [];
-    inputStream.end(inputBuffer);
-
-    ffmpeg(inputStream)
-      .inputOptions(["-f", "s16le", "-ar", String(inputRate), "-ac", "1"])
-      .audioCodec("pcm_s16le")
-      .audioFrequency(outputRate)
-      .outputOptions(["-f", "s16le"])
-      .on("start", (cmd) => console.log("🔧 ffmpeg command:", cmd))
-      .on("error", reject)
-      .on("end", () => resolve(Buffer.concat(chunks)))
-      .pipe(outputStream);
-
-    outputStream.on("data", (chunk) => chunks.push(chunk));
-    outputStream.on("error", reject);
-  });
-}
-
 export function writeWavFile(
   buffer: Buffer,
   sampleRate = 48000,

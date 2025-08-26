@@ -6,7 +6,9 @@ import { PassThrough } from "stream";
 
 ffmpeg.setFfmpegPath(ffmpegPath!);
 
+let agentSpeaking = false;
 let _interviewStarted = false;
+
 // -----------------------------
 // Phase plumbing (inside agent)
 // -----------------------------
@@ -312,7 +314,10 @@ export const wsSession = new RealtimeSession(agent, {
 // wire responseMgr to session lifecycle + allow others to listen
 (wsSession.on as any)("event", (ev: any) => {
   // When a model response starts/ends
-  if (ev.type === "response.created") responseMgr.markStart();
+  if (ev.type === "response.created") {
+    responseMgr.markStart();
+    agentSpeaking = true;
+  }
 
   if (
     ev.type === "response.completed" ||
@@ -320,6 +325,7 @@ export const wsSession = new RealtimeSession(agent, {
     ev.type === "response.canceled"
   ) {
     responseMgr.markDone();
+    agentSpeaking = false;
   }
 
   // If server reports there's already an active response, treat as inFlight
@@ -369,7 +375,6 @@ function chunkHasVoice(ab: ArrayBuffer): boolean {
   return rms > 200;
 }
 
-let agentSpeaking = false;
 let speakingTimer: NodeJS.Timeout | null = null;
 export function isAgentSpeaking() {
   return agentSpeaking;
@@ -379,13 +384,12 @@ function markAgentSpeaking() {
   if (speakingTimer) clearTimeout(speakingTimer);
   speakingTimer = setTimeout(() => {
     agentSpeaking = false;
-  }, 200);
+  }, 1200);
 }
 
 export async function initRealtime(apiKey: string) {
   if (!audioListenerBound) {
     wsSession.on("audio", (event) => {
-      if (chunkHasVoice(event.data)) markAgentSpeaking();
       playCb?.(event.data);
     });
     audioListenerBound = true;
