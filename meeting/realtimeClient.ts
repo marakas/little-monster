@@ -8,6 +8,7 @@ ffmpeg.setFfmpegPath(ffmpegPath!);
 
 let agentSpeaking = false;
 let _interviewStarted = false;
+let pendingFollowUp: PendingReq | null = null;
 
 // -----------------------------
 // Phase plumbing (inside agent)
@@ -259,23 +260,23 @@ const advancePhase = tool({
   },
   execute: async ({ next_phase, reason }) => {
     currentPhase = next_phase;
+
+    // Update phase-specific system instructions only
     wsSession.transport.sendEvent({
       type: "session.update",
       session: { instructions: makeInstructions(currentPhase) },
     });
 
-    // queue exactly one response safely
-    requestModelResponse({
-      instructions:
-        currentPhase === "whiteboard_gate"
-          ? "Call tool request_vision_check now. If state is 'blank' or 'has_content', call advance_phase to 'interview'."
-          : "Acknowledge phase change briefly and continue.",
-    });
-
-    if (currentPhase === "interview") {
-      requestModelResponse({
-        instructions: `Stay on "${SCENARIO_TITLE}". Open with requirements gathering. Do not switch problems.`,
-      });
+    pendingFollowUp = null;
+    if (currentPhase === "whiteboard_gate") {
+      pendingFollowUp = {
+        instructions:
+          "Call tool request_vision_check now. If state is 'blank' or 'has_content', call advance_phase to 'interview'. Keep spoken output to one short sentence at most.",
+      };
+    } else if (currentPhase === "interview") {
+      pendingFollowUp = {
+        instructions: `Say one short line: "Let's design ${SCENARIO_TITLE}. Start by clarifying requirements and constraints you want to assume." Then stop and wait for the candidate.`,
+      };
     }
 
     return { ok: true, phase: currentPhase, reason };
@@ -325,7 +326,32 @@ export const wsSession = new RealtimeSession(agent, {
     ev.type === "response.canceled"
   ) {
     responseMgr.markDone();
+
+    // NEW: if a tool asked for a post-phase-change line, say it now.
+    if (pendingFollowUp) {
+      responseMgr.request(pendingFollowUp);
+      pendingFollowUp = null;
+    }
+
     agentSpeaking = false;
+  }
+
+  if (ev?.type === "input_audio_transcription.completed") {
+    const t = (ev.transcript || "").trim();
+
+    if (waitingForTranscript) {
+      waitingForTranscript = false;
+      if (transcriptFallbackTimer) {
+        clearTimeout(transcriptFallbackTimer);
+        transcriptFallbackTimer = null;
+      }
+
+      // Only respond if we got meaningful user input
+      if (t.length >= 5) {
+        // tune threshold if needed
+        requestModelResponse();
+      }
+    }
   }
 
   // If server reports there's already an active response, treat as inFlight
@@ -334,18 +360,6 @@ export const wsSession = new RealtimeSession(agent, {
     ev?.error?.error?.code === "conversation_already_has_active_response"
   ) {
     responseMgr.markStart();
-  }
-
-  // Trigger agent speech only AFTER ASR finished for the committed chunk
-  if (ev?.type === "input_audio_transcription.completed") {
-    if (waitingForTranscript) {
-      waitingForTranscript = false;
-      if (transcriptFallbackTimer) {
-        clearTimeout(transcriptFallbackTimer);
-        transcriptFallbackTimer = null;
-      }
-      requestModelResponse();
-    }
   }
 });
 
@@ -416,8 +430,8 @@ export async function startPhasedInterview() {
 
 /* ---------- input audio commit helpers ---------- */
 const INPUT_RATE = 16000;
-const MIN_COMMIT_MS = 180; // bumped to reduce empty commits
-const SILENCE_MS = 450; // user must be quiet for this long
+const MIN_COMMIT_MS = 220;
+const SILENCE_MS = 650;
 
 // Keep bytesSinceCommit as server-truth of what we've appended (16k s16le)
 let bytesSinceCommit = 0;
@@ -446,7 +460,7 @@ function resetCommitBudget() {
 }
 
 export function commitNow() {
-  // Gate by what the server has ACTUALLY received (post-resample)
+  if (isAgentSpeaking()) return;
   if (!canCommit()) return;
   console.log("commitNow");
   wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
@@ -457,23 +471,11 @@ export function commitNow() {
   transcriptFallbackTimer = setTimeout(() => {
     if (waitingForTranscript) {
       waitingForTranscript = false;
-      requestModelResponse(); // backstop if ASR event is delayed
     }
   }, 1800);
 
   resetCommitBudget();
 }
-
-// (kept for completeness; prefer commitNow() where you control timing)
-let silenceTimer: NodeJS.Timeout | null = null;
-/*
-function scheduleCommit() {
-  if (silenceTimer) clearTimeout(silenceTimer);
-  silenceTimer = setTimeout(() => {
-    // use gated commit
-    commitNow();
-  }, 600);
-}*/
 
 function bufferToArrayBuffer(buf: Buffer): ArrayBuffer {
   const ab = new ArrayBuffer(buf.length);

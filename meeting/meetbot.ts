@@ -41,7 +41,13 @@ import {
   ENABLE_FULL_AUDIO_ACCUMULATION,
 } from "./constants.ts";
 import { env } from "./env.ts";
-import state, { waitUntilJoined } from "./state.ts";
+import state, {
+  waitUntilJoined,
+  switchTo,
+  notePrimaryActivity,
+  noteFallbackActivity,
+  resetAudioMux,
+} from "./state.ts";
 import { stopAudioProcessing, stopMeetBot } from "./stop_meet_bot.ts";
 import {
   delay,
@@ -127,11 +133,11 @@ function startAudioProcessing() {
       stopAudioProcessing();
       return;
     }
-
+    if (isAgentSpeaking()) return; // don't force-commit during TTS
     const silentForMs = Date.now() - lastSpeechAt;
-    if (wasSpeaking && silentForMs > 700) {
+    if (wasSpeaking && silentForMs > 650) {
       wasSpeaking = false;
-      commitNow(); // force a turn boundary if server VAD missed it
+      commitNow();
     }
   }, 200);
 
@@ -246,6 +252,11 @@ export async function startMeetBot(
     state.meetingPlatform = meetingPlatform;
 
     console.log(`🚀 Starting bot for ${meetingPlatform} meeting: ${meetUrl}`);
+    resetAudioMux();
+    if (state.muxWatchdog) {
+      clearInterval(state.muxWatchdog);
+      state.muxWatchdog = null;
+    }
 
     // 🧪 Initialize experimental audio accumulation mode
     if (ENABLE_FULL_AUDIO_ACCUMULATION) {
@@ -416,13 +427,11 @@ export async function startMeetBot(
     assert(state.activeBrowser);
     const page = await state.activeBrowser.newPage();
     await enableStreamingMic(page);
-    let debugCounter = 0;
 
-    // --- just above onRealtimeAudio(...) in startMeetBot:
     let outPrimed = false;
     let outWarmup: number[] = [];
     const MODEL_OUT_RATE = 24000; // server sends 24 kHz PCM16
-    const PREROLL_MS = 220; // 200–250ms works well
+    const PREROLL_MS = 320;
     const PREROLL_SAMPLES = Math.floor((MODEL_OUT_RATE * PREROLL_MS) / 1000);
 
     onRealtimeAudio((ab: ArrayBuffer) => {
@@ -455,12 +464,16 @@ export async function startMeetBot(
         for (let i = 0; i < int16.length; i++) outWarmup.push(int16[i]);
         if (outWarmup.length >= PREROLL_SAMPLES) {
           const firstBurst = outWarmup.splice(0, outWarmup.length); // flush all we have
-          // fire-and-forget to avoid serializing on small chunks
-          // (enqueuePcmAt(rate, Int16[]))
+          const zeroPad = new Array(PREROLL_SAMPLES).fill(0); // push a brief silence frame first to wake up the ScriptProcessor pull
+
           void state.page!.evaluate(
-            ({ rate, samples }) => (window as any).enqueuePcmAt(rate, samples),
-            { rate: MODEL_OUT_RATE, samples: firstBurst }
+            ({ rate, pad, samples }) => {
+              (window as any).enqueuePcmAt(rate, pad);
+              (window as any).enqueuePcmAt(rate, samples);
+            },
+            { rate: MODEL_OUT_RATE, pad: zeroPad, samples: firstBurst }
           );
+
           outPrimed = true;
         }
         return;
@@ -496,10 +509,16 @@ export async function startMeetBot(
       .audioFrequency(16000) // Realtime API expects 16k in
       .audioChannels(1)
       .format("s16le") // <-- RAW PCM, not WAV
-      .on("error", (err) => console.error("FFmpeg Error:", err));
+      .on("error", (err) => {
+        console.error("FFmpeg Error:", err);
+        // demote primary on error; fallback will claim on next activity
+        if (state.audioMux.active === "primary") state.audioMux.active = "none";
+      });
 
     const toRealtime = new PassThrough();
     state.activeProcess.pipe(toRealtime).on("data", (chunk: Buffer) => {
+      notePrimaryActivity();
+      if (state.audioMux.active !== "primary") return;
       const ab = new Uint8Array(chunk).buffer;
       const humanVoiced = chunkHasVoice16k(ab);
       if (humanVoiced && !isAgentSpeaking()) {
@@ -510,10 +529,37 @@ export async function startMeetBot(
       }
     });
 
+    // Demote when FFmpeg ends/closes
+    (state.activeProcess as any)
+      .on?.("end", () => {
+        if (state.audioMux.active === "primary") state.audioMux.active = "none";
+      })
+      .on?.("close", () => {
+        if (state.audioMux.active === "primary") state.audioMux.active = "none";
+      });
+
     state.activeStream = new PassThrough();
     state.activeStream.pipe(file);
     state.activeStream.pipe(audioStream);
 
+    // Watch for stale sources and free the lane
+    const PRIMARY_STALE_MS = 2000;
+    const FALLBACK_STALE_MS = 2000;
+    if (state.muxWatchdog) clearInterval(state.muxWatchdog);
+    state.muxWatchdog = setInterval(() => {
+      const now = Date.now();
+      const primaryStale =
+        now - state.audioMux.lastPrimaryAt > PRIMARY_STALE_MS;
+      const fallbackStale =
+        now - state.audioMux.lastFallbackAt > FALLBACK_STALE_MS;
+
+      if (state.audioMux.active === "primary" && primaryStale) {
+        state.audioMux.active = "none";
+      }
+      if (state.audioMux.active === "fallback" && fallbackStale) {
+        state.audioMux.active = "none";
+      }
+    }, 500);
     await delay();
 
     const context = state.activeBrowser.defaultBrowserContext();

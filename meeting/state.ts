@@ -5,6 +5,7 @@ import { EventEmitter } from "node:events";
 
 export type Browser = Awaited<ReturnType<typeof launch>>;
 export type Page = Awaited<ReturnType<Browser["newPage"]>>;
+export type AudioSource = "none" | "primary" | "fallback";
 
 // Lightweight event bus for state changes
 export const stateEvents = new EventEmitter();
@@ -17,6 +18,13 @@ const state = {
   activeRecordings: {} as Record<string, (() => void) | null>, // store active recording processes
   activeStream: null as Transform | null, // Active audio stream
   audioBuffer: Buffer.alloc(0), // Shared audio buffer
+  audioMux: {
+    active: "none" as AudioSource,
+    lastSwitchAt: 0,
+    lastPrimaryAt: 0,
+    lastFallbackAt: 0,
+    minHoldMs: 1200, // hysteresis to avoid ping-pong
+  },
   audioProcessingInterval: null as NodeJS.Timeout | null, // Audio processing interval
   currentRecordingPath: null as string | null, // Path to the recorded video/audio
   currentSpeaker: "User", // Current active speaker
@@ -28,8 +36,10 @@ const state = {
   isClosing: false, // Flag to track bot closing
   isFinalizing: false, // Flag to track bot finalizing
   meetingId: null as string | null, // Active meeting ID
+  muxWatchdog: null as NodeJS.Timeout | null,
   page: null as Page | null, // Active browser page
   pendingTranscriptions: 0, // Pending transcriptions
+  primaryAudioActive: false, // when FFmpeg starts streaming
   sessionDir: null as string | null, // Current meeting session directory
   stopTimeout: null as NodeJS.Timeout | null, // Timeout for stopping bot after max duration
   transcriptionLog: [] as string[], // Store transcriptions
@@ -83,4 +93,30 @@ export function waitUntilJoined(timeoutMs = 90_000): Promise<void> {
 
     stateEvents.once("joined", onJoin);
   });
+}
+
+export function switchTo(src: "primary" | "fallback") {
+  const now = Date.now();
+  if (state.audioMux.active === src) return;
+  if (now - state.audioMux.lastSwitchAt < state.audioMux.minHoldMs) return; // hysteresis
+  state.audioMux.active = src;
+  state.audioMux.lastSwitchAt = now;
+}
+
+export function notePrimaryActivity() {
+  state.audioMux.lastPrimaryAt = Date.now();
+  if (state.audioMux.active !== "primary" && state.hasJoined)
+    switchTo("primary");
+}
+
+export function noteFallbackActivity() {
+  state.audioMux.lastFallbackAt = Date.now();
+  if (state.audioMux.active === "none" && state.hasJoined) switchTo("fallback");
+}
+
+export function resetAudioMux() {
+  state.audioMux.active = "none";
+  state.audioMux.lastPrimaryAt = 0;
+  state.audioMux.lastFallbackAt = 0;
+  state.audioMux.lastSwitchAt = 0;
 }

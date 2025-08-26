@@ -1,5 +1,5 @@
 import { sendRealtimeAudio } from "./realtimeClient.ts";
-import { type Page } from "./state.ts";
+import state, { type Page, noteFallbackActivity } from "./state.ts";
 
 export async function audioCapture(page: Page, platform: string) {
   try {
@@ -13,14 +13,17 @@ export async function audioCapture(page: Page, platform: string) {
       await page.exposeFunction(
         "handleRealAudioChunk",
         (audioChunk: number[], browserSampleRate: number) => {
+          if (!state.hasJoined) return; // wait until in-room
+          noteFallbackActivity(); // mark activity
+          if (state.audioMux.active !== "fallback") return; // only if fallback owns the lane
+
           const uint8 = new Uint8Array(audioChunk);
           // ✅ tell the sender the true rate so it resamples 48k -> 16k
           sendRealtimeAudio(uint8.buffer, browserSampleRate);
-          
+
           console.log(
             `✅ handleRealAudioChunk: Sent ${uint8.byteLength} bytes to Realtime @ ${browserSampleRate} Hz`
           );
-          
         }
       );
     } catch (exposeError) {

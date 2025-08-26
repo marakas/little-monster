@@ -66,6 +66,12 @@ export async function stopMeetBot() {
       clearTimeout(state.stopTimeout);
       state.stopTimeout = null;
     }
+
+    if (state.muxWatchdog) {
+      clearInterval(state.muxWatchdog);
+      state.muxWatchdog = null;
+    }
+    
     console.log("⏹️ Calling stopSimpleScreenshots...");
 
     stopScreencastCapture();
