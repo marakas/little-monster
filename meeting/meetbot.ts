@@ -519,7 +519,6 @@ export async function startMeetBot(
     // optional: give SPA a moment, then proceed
     await page.waitForSelector("body", { timeout: 60_000 });
     await joinGoogleMeet(page, transformedMeetUrl);
-
     await audioCapture(page, meetingPlatform);
     monitorKickout(page);
 
@@ -559,8 +558,8 @@ export async function startMeetBot(
       const maybeAnalyze = async (filePath: string) => {
         if (!filePath.toLowerCase().endsWith(".jpg")) return;
         latestScreenshotPath = filePath;
-        if (!state.dismissed) clickMeetGotIt(state.page);
-        //console.log("state dismissed: ", state.dismissed);
+        clickMeetGotIt(state.page);
+        console.log("state dismissed: ", state.dismissed);
         console.log(`👀 [vision] file event: ${filePath}`);
         const now = Date.now();
         if (now - lastRun < MIN_ANALYSIS_INTERVAL_MS) {

@@ -1178,10 +1178,13 @@ export async function monitorKickout(page: Page) {
       } else {
         console.log(`✅ [${BOT_ID}] Bot has entered the meeting!`);
         // ✅ Grace period to allow UI to fully load
+        /*
         console.log(
           `⏳ [${BOT_ID}] Waiting 5 seconds for meeting UI to stabilize...`
         );
-        await delay(5000);
+        
+        */
+        //await delay(5000);
 
         setHasJoined(true);
 

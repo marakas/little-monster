@@ -3,152 +3,120 @@ import state, { type Page } from "../state.ts";
 import { stopAudioProcessing, stopMeetBot } from "../stop_meet_bot.ts";
 
 export async function clickMeetGotIt(page: Page) {
-  const TIMEOUT_MS = 8000;
-  const POLL_MS = 200;
-  const GOT_IT_TEXTS = [
-    "got it",
-    "ok",
-    "okay",
-    "understood",
-    "close",
-    "了解",
-    "わかりました",
-    "閉じる",
-    "確認",
-  ];
+  if (state.dismissed) return true;
 
-  const delayMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const DIALOG_BY_ARIA =
+    "div.VfPpkd-P5QLlc[role='dialog'][aria-label='Others may see your video differently'], " +
+    "div.VfPpkd-P5QLlc[role='dialog'][aria-label*='Others may see your video differently'], " + // defensive, but still specific
+    "div.VfPpkd-P5QLlc[role='dialog'][aria-label*='video differently']";
 
-  const tryInContext = async (ctx: any): Promise<boolean> => {
-    // 1) Specific MDC "ok" inside Meet dialog
-    const specificSel =
-      "div.VfPpkd-P5QLlc[role='dialog'] button[data-mdc-dialog-action='ok'], " +
-      "div[role='dialog'] button[data-mdc-dialog-action='ok']";
-    const btn = await ctx.$?.(specificSel);
-    if (btn) {
-      try {
-        await btn.click({ delay: 15 });
-        return true;
-      } catch {}
-      try {
-        await btn.evaluate((el: HTMLElement) => el.click());
-        return true;
-      } catch {}
+  try {
+    // 1) Check if the exact dialog is present (aria-label match)
+    let hasTarget = await page.evaluate(
+      (sel) => !!document.querySelector(sel),
+      DIALOG_BY_ARIA
+    );
+
+    // 2) If aria-label match not found, fall back to matching the H2 title *inside a Meet dialog*
+    if (!hasTarget) {
+      hasTarget = await page.evaluate(() => {
+        const dialogs = Array.from(
+          document.querySelectorAll("div.VfPpkd-P5QLlc[role='dialog']")
+        );
+        return dialogs.some((dlg) => {
+          const h2 = dlg.querySelector("h2.szmhyf");
+          return (
+            h2?.textContent?.trim() === "Others may see your video differently"
+          );
+        });
+      });
     }
 
-    // 2) Any visible button with a "Got it"-like label (multi-locale)
-    const clicked = await ctx.evaluate?.((texts: string[]) => {
-      const isVisible = (el: Element) => {
-        const s = getComputedStyle(el as HTMLElement);
-        const r = (el as HTMLElement).getBoundingClientRect();
-        return (
-          s.visibility !== "hidden" &&
-          s.display !== "none" &&
-          r.width > 0 &&
-          r.height > 0
-        );
-      };
+    if (!hasTarget) {
+      // That specific popup isn’t on screen—do nothing.
+      return false;
+    }
 
-      const dialogs = Array.from(
-        document.querySelectorAll("div[role='dialog']")
-      );
-      for (const dlg of dialogs) {
-        const buttons = Array.from(dlg.querySelectorAll("button"));
-        for (const b of buttons) {
-          const raw = (b.textContent || "").trim();
-          const txt = raw.toLowerCase();
-          const spanTxt = (b.querySelector("span")?.textContent || "")
-            .trim()
-            .toLowerCase();
-          if (
-            isVisible(b) &&
-            (texts.some((t) => txt.includes(t)) ||
-              texts.some((t) => spanTxt.includes(t)))
-          ) {
-            (b as HTMLElement).click();
-            return true;
-          }
+    // 3) Click the *Got it* button within that specific dialog only
+    const clicked = await page.evaluate((sel) => {
+      const dlg =
+        document.querySelector(sel) ||
+        Array.from(
+          document.querySelectorAll("div.VfPpkd-P5QLlc[role='dialog']")
+        ).find((d) => {
+          const h2 = d.querySelector("h2.szmhyf");
+          return (
+            h2?.textContent?.trim() === "Others may see your video differently"
+          );
+        });
+
+      if (!dlg) return false;
+
+      // Find the button whose visible text is exactly "Got it"
+      const btns = Array.from(dlg.querySelectorAll("button"));
+      for (const b of btns) {
+        const text = (b.textContent || "").trim();
+        if (text === "Got it") {
+          (b as HTMLElement).click();
+          return true;
         }
       }
       return false;
-    }, GOT_IT_TEXTS);
+    }, DIALOG_BY_ARIA);
 
-    if (clicked) return true;
-
-    // 3) Enter to activate default dialog button (MDC sets default focus attributes)
-    try {
-      await page.keyboard?.press?.("Enter");
-      await delayMs(50);
-    } catch {}
-    return false;
-  };
-
-  const tryEverywhere = async (): Promise<boolean> => {
-    // main document
-    if (await tryInContext(page)) return true;
-
-    // iframes (Meet sometimes renders overlays inside frames)
-    const frames: any[] =
-      typeof page.frames === "function" ? page.frames() : [];
-    for (const f of frames) {
-      try {
-        if (await tryInContext(f)) return true;
-      } catch {}
+    if (!clicked) {
+      console.log(
+        "ℹ️ Target dialog present, but its 'Got it' button was not found."
+      );
+      return false;
     }
-    return false;
-  };
 
-  const endAt = Date.now() + TIMEOUT_MS;
-  let dismissed = false;
-
-  // Poll until found/dismissed or timeout
-  while (Date.now() < endAt && !dismissed) {
-    // If no dialog exists anymore, we’re done
-    const hasDialog = await page.evaluate(
-      () =>
-        !!document.querySelector(
-          "div[role='dialog'], div.VfPpkd-P5QLlc[role='dialog']"
-        )
-    );
-    if (!hasDialog) break;
-
-    dismissed = await tryEverywhere();
-    if (!dismissed) await delayMs(POLL_MS);
-  }
-
-  // Verify removal
-  const stillThere = await page.evaluate(
-    () =>
-      !!document.querySelector(
-        "div[role='dialog'], div.VfPpkd-P5QLlc[role='dialog']"
+    // 4) Wait until that exact dialog disappears before setting dismissed
+    await page
+      .waitForFunction(
+        (sel) => {
+          // Gone if: no aria-labeled target AND no dialog with that specific H2 title
+          const ariaGone = !document.querySelector(sel);
+          const titleGone = !Array.from(
+            document.querySelectorAll("div.VfPpkd-P5QLlc[role='dialog']")
+          ).some(
+            (d) =>
+              d.querySelector("h2.szmhyf")?.textContent?.trim() ===
+              "Others may see your video differently"
+          );
+          return ariaGone && titleGone;
+        },
+        { timeout: 5000 },
+        DIALOG_BY_ARIA
       )
-  );
-
-  if (!stillThere) {
-    console.log("✅ Dismissed Meet modal.");
-    state.dismissed = true;
-    await delayMs(150);
-    return;
-  }
-
-  // 🔥 Final fallback: force remove overlay (automation-safe)
-  const removed = await page.evaluate(() => {
-    let removedAny = false;
-    document
-      .querySelectorAll(
-        "div.VfPpkd-wzTsW, div.VfPpkd-P5QLlc[role='dialog'], div[role='dialog']"
-      )
-      .forEach((el) => {
-        (el as HTMLElement).remove();
-        removedAny = true;
+      .catch(() => {
+        /* don’t throw—just don’t mark dismissed */
       });
-    return removedAny;
-  });
 
-  if (removed) {
-    console.log("🧹 Force-removed Meet modal overlay.");
-  } else {
-    console.log("⚠️ Could not dismiss Meet modal (no button found).");
+    // Re-check; only mark dismissed if the specific dialog is actually gone
+    const stillThere = await page.evaluate((sel) => {
+      const hasAria = !!document.querySelector(sel);
+      const hasTitle = Array.from(
+        document.querySelectorAll("div.VfPpkd-P5QLlc[role='dialog']")
+      ).some(
+        (d) =>
+          d.querySelector("h2.szmhyf")?.textContent?.trim() ===
+          "Others may see your video differently"
+      );
+      return hasAria || hasTitle;
+    }, DIALOG_BY_ARIA);
+
+    if (!stillThere) {
+      console.log("✅ Dismissed: 'Others may see your video differently'.");
+      state.dismissed = true; // only now
+      return true;
+    } else {
+      console.log("⚠️ Clicked, but dialog still present.");
+      return false;
+    }
+  } catch (e) {
+    console.log("⚠️ Error dismissing the specific Meet dialog:", e);
+    return false;
   }
 }
 
@@ -401,9 +369,6 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
     );
   }
 
-  // ✅ **Click "Ask to join" button with better validation**
-
-  // ✅ **INVESTIGATE: Join button accessibility despite modal**
   const joinButtonInvestigation = await page.evaluate(() => {
     const modal = document.querySelector(
       '[role="dialog"], .modal, [data-mdc-dialog-surface]'
@@ -692,7 +657,7 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
   }
 
   try {
-    await clickMeetGotIt(page);
+    // await clickMeetGotIt(page);
   } catch (e) {
     console.log("⚠️ Failed to dismiss 'Got it' dialog:", e);
   }
