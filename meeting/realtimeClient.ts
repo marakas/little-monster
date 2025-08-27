@@ -149,11 +149,13 @@ type PendingReq = {
   modalities?: ("audio" | "text")[];
 };
 
+// realtimeClient.ts
+
 class ResponseManager {
   private inFlight = false;
   private queue: PendingReq[] = [];
   private lastEnqueueAt = 0;
-  private static ENQUEUE_COOLDOWN_MS = 350; // coalesce bursty triggers
+  private static ENQUEUE_COOLDOWN_MS = 350;
 
   request(req: PendingReq = {}) {
     const now = Date.now();
@@ -164,12 +166,17 @@ class ResponseManager {
       req.modalities = ["audio", "text"];
     }
     this.queue.push(req);
+    console.log(`[rm] queued (q=${this.queue.length})`);
     this.pump();
   }
 
   pump() {
-    if (this.inFlight || this.queue.length === 0) return;
+    if (this.inFlight || this.queue.length === 0) {
+      if (this.inFlight) console.log("[rm] pump: skipped (inFlight=true)");
+      return;
+    }
     const req = this.queue.shift()!;
+    console.log("[rm] pump: sending response.create");
     wsSession.transport.sendEvent({
       type: "response.create",
       response: {
@@ -182,17 +189,28 @@ class ResponseManager {
 
   markStart() {
     this.inFlight = true;
+    console.log("[rm] markStart -> inFlight=true");
   }
 
   markDone() {
     this.inFlight = false;
+    console.log("[rm] markDone -> inFlight=false");
     this.pump();
+  }
+
+  reset() {
+    this.inFlight = false;
+    this.queue = [];
+    this.lastEnqueueAt = 0;
+    console.log("[rm] reset");
   }
 }
 
 const responseMgr = new ResponseManager();
 
 export function requestModelResponse(opts?: PendingReq) {
+  logReq(opts?.instructions ? "custom-instructions" : "generic");
+
   responseMgr.request(opts || {});
 }
 
@@ -312,10 +330,15 @@ export const wsSession = new RealtimeSession(agent, {
   },
 });
 
+function logReq(where: string) {
+  console.log(`[response.create] requested by: ${where} @ ${Date.now()}`);
+}
+
 // wire responseMgr to session lifecycle + allow others to listen
 (wsSession.on as any)("event", (ev: any) => {
   // When a model response starts/ends
   if (ev.type === "response.created") {
+    console.log(`[response.created] id=${ev.response?.id || "?"}`);
     responseMgr.markStart();
     agentSpeaking = true;
   }
@@ -325,8 +348,8 @@ export const wsSession = new RealtimeSession(agent, {
     ev.type === "response.failed" ||
     ev.type === "response.canceled"
   ) {
+    console.log(`[response.ended] type=${ev.type}`);
     responseMgr.markDone();
-
     // NEW: if a tool asked for a post-phase-change line, say it now.
     if (pendingFollowUp) {
       responseMgr.request(pendingFollowUp);
@@ -354,12 +377,14 @@ export const wsSession = new RealtimeSession(agent, {
     }
   }
 
-  // If server reports there's already an active response, treat as inFlight
   if (
     ev.type === "error" &&
     ev?.error?.error?.code === "conversation_already_has_active_response"
   ) {
-    responseMgr.markStart();
+    console.warn("[rm] server says active response already in progress");
+    // Option A: do nothing (leave inFlight as-is; created handler will clear)
+    // Option B (safer): allow queue to retry when current response ends
+    // responseMgr.markDone();
   }
 });
 
@@ -409,7 +434,7 @@ export async function initRealtime(apiKey: string) {
     audioListenerBound = true;
   }
   await wsSession.connect({ apiKey });
-
+  responseMgr.reset();
   // Ensure current phase instructions are set (intro by default)
   wsSession.transport.sendEvent({
     type: "session.update",
@@ -421,11 +446,11 @@ export async function startPhasedInterview() {
   if (_interviewStarted) return;
   _interviewStarted = true;
 
-  await wsSession.sendMessage(
-    `Begin Phase: intro. Scenario is fixed: ${SCENARIO_TITLE}.`
-  );
-  // explicitly ask the model to speak the intro (queued safely)
-  requestModelResponse();
+  requestModelResponse({
+    instructions:
+      `Phase: intro. Explain the format in ≤3 sentences, ask if they have questions, ` +
+      `and prompt them to share a whiteboard app. Wait for the user after that.`,
+  });
 }
 
 /* ---------- input audio commit helpers ---------- */

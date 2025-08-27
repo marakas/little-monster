@@ -674,6 +674,7 @@ export async function startMeetBot(
     }
 
     await waitUntilJoined(120_000);
+    await delay(1000);
     await startPhasedInterview();
 
     // ✅ **Auto-stop the bot after the maximum duration**
