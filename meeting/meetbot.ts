@@ -5,6 +5,7 @@ import { mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import { PassThrough } from "node:stream";
 import * as os from "node:os";
+import { flow } from "./realtimeClient.ts";
 
 import {
   startScreencastCapture,
@@ -17,7 +18,6 @@ import {
   isAgentSpeaking,
   onRealtimeAudio,
   sendRealtimeAudio,
-  commitNow,
 } from "./realtimeClient.ts";
 
 import { audioCapture } from "./audioCapture.ts";
@@ -113,35 +113,6 @@ function chunkHasVoice16k(ab: ArrayBuffer): boolean {
   }
   const rms = Math.sqrt(sum / Math.max(1, n)); // 0..32767
   return rms > 200; // tweak 120–300 if needed
-}
-
-// ✅ **Enhanced Audio Processing with Real-time Speech Detection**
-function startAudioProcessing() {
-  if (state.audioProcessingInterval) {
-    console.log("⚠️ Audio processing is already running.");
-    return;
-  }
-
-  console.log("🎤 Starting enhanced audio processing...");
-
-  // Balanced monitoring with buffer management
-  state.audioProcessingInterval = setInterval(() => {
-    if (!state.isBotRunning) {
-      console.log(
-        "🛑 Bot stopped but interval still running. Clearing it now."
-      );
-      stopAudioProcessing();
-      return;
-    }
-    if (isAgentSpeaking()) return; // don't force-commit during TTS
-    const silentForMs = Date.now() - lastSpeechAt;
-    if (wasSpeaking && silentForMs > 650) {
-      wasSpeaking = false;
-      commitNow();
-    }
-  }, 200);
-
-  console.log("✅ Enhanced audio processing started with buffer management");
 }
 
 // ✅ **Start Meet Bot**
@@ -305,8 +276,6 @@ export async function startMeetBot(
       // if (!ev || !ev.type) console.log("RT event:", ev);
     });
 
-    // Start enhanced audio processing
-    startAudioProcessing();
     state.isClosing = false; // reset to false if previous session was running
 
     // ✅ Create session directory based on meeting_id
@@ -636,7 +605,23 @@ export async function startMeetBot(
           console.log(
             `[vision] summary: ${res?.summary?.slice(0, 200) || "<empty>"}`
           );
-          //await sendUserText(`[Vision] ${res.summary}`);
+          // Derive whiteboard state exactly like you do in registerVisionProvider:
+          const wbState =
+            res.whiteboard?.state ??
+            (/blank whiteboard|whiteboard.*blank/i.test(res.summary)
+              ? "blank"
+              : /whiteboard|miro|excalidraw|jamboard|figma|canvas/i.test(
+                  res.summary
+                )
+              ? "has_content"
+              : /does not show a whiteboard|no whiteboard/i.test(res.summary)
+              ? "none"
+              : "unknown");
+
+          // 👉 Tell the FlowController:
+          flow.onVisionUpdate(
+            wbState as "none" | "blank" | "has_content" | "unknown"
+          );
         } catch (e: any) {
           console.error("[vision] analysis failed:", e?.message || e);
         }

@@ -141,6 +141,64 @@ function makeInstructions(phase: Phase) {
     .trim();
 }
 
+class FlowController {
+  phase: Phase = "intro";
+  latestVision: WhiteboardState = "unknown";
+
+  enter(next: Phase) {
+    this.phase = next;
+
+    // 1) swap system prompt for the phase
+    wsSession.transport.sendEvent({
+      type: "session.update",
+      session: { instructions: makeInstructions(next) },
+    });
+
+    // 2) say the phase-specific opening line (one-shot)
+    if (next === "intro") {
+      responseMgr.request({
+        instructions:
+          "Explain rules in ≤3 sentences, ask if they have questions, and prompt them to share a whiteboard app. Then wait.",
+        modalities: ["audio", "text"],
+      });
+    } else if (next === "whiteboard_gate") {
+      responseMgr.request({
+        instructions:
+          "Briefly ask them to share a whiteboard (Miro/Excalidraw/Figma). Keep it to one short sentence. Then wait.",
+        modalities: ["audio", "text"],
+      });
+    } else if (next === "interview") {
+      responseMgr.request({
+        instructions: `Say: "Let's design Instagram. Start by clarifying requirements and constraints you want to assume." Then stop.`,
+        modalities: ["audio", "text"],
+      });
+    }
+  }
+
+  onTranscript(t: string) {
+    // Gate behavior per phase
+    if (this.phase === "whiteboard_gate") {
+      // stay quiet; we’re waiting for vision to confirm a board
+      return;
+    }
+    if (t.length >= 5) {
+      responseMgr.request(); // normal back-and-forth reply
+    }
+  }
+
+  onVisionUpdate(state: WhiteboardState) {
+    this.latestVision = state;
+    if (
+      this.phase === "whiteboard_gate" &&
+      (state === "blank" || state === "has_content")
+    ) {
+      this.enter("interview");
+    }
+  }
+}
+
+export const flow = new FlowController();
+
 // -----------------------------
 // Centralized response manager
 // -----------------------------
@@ -148,8 +206,6 @@ type PendingReq = {
   instructions?: string;
   modalities?: ("audio" | "text")[];
 };
-
-// realtimeClient.ts
 
 class ResponseManager {
   private inFlight = false;
@@ -316,15 +372,11 @@ export const wsSession = new RealtimeSession(agent, {
   config: {
     inputAudioFormat: "pcm16",
     outputAudioFormat: "pcm16",
-    inputAudioTranscription: {
-      model: "gpt-4o-transcribe",
-      language: "en",
-      // prompt: "",
-    },
+    inputAudioTranscription: { model: "gpt-4o-transcribe", language: "en" },
     turnDetection: {
       type: "semantic_vad",
       eagerness: "medium",
-      createResponse: false, // keep manual control
+      createResponse: false, // <— SDK commits, YOU decide when to reply
       interruptResponse: true,
     },
   },
@@ -360,23 +412,10 @@ function logReq(where: string) {
   }
 
   if (ev?.type === "input_audio_transcription.completed") {
-    const t = (ev.transcript || "").trim();
-
-    if (waitingForTranscript) {
-      waitingForTranscript = false;
-      if (transcriptFallbackTimer) {
-        clearTimeout(transcriptFallbackTimer);
-        transcriptFallbackTimer = null;
-      }
-
-      // Only respond if we got meaningful user input
-      if (t.length >= 5) {
-        // tune threshold if needed
-        requestModelResponse();
-      }
-    }
+    // Let the model think & possibly call tools; no heuristics.
+    responseMgr.request();
   }
-
+  
   if (
     ev.type === "error" &&
     ev?.error?.error?.code === "conversation_already_has_active_response"
@@ -446,11 +485,7 @@ export async function startPhasedInterview() {
   if (_interviewStarted) return;
   _interviewStarted = true;
 
-  requestModelResponse({
-    instructions:
-      `Phase: intro. Explain the format in ≤3 sentences, ask if they have questions, ` +
-      `and prompt them to share a whiteboard app. Wait for the user after that.`,
-  });
+  flow.enter("intro");
 }
 
 /* ---------- input audio commit helpers ---------- */
@@ -478,28 +513,6 @@ function canCommit() {
     msBuffered >= MIN_COMMIT_MS &&
     quietFor >= SILENCE_MS
   );
-}
-function resetCommitBudget() {
-  bytesSinceCommit = 0;
-  voicedSinceLastCommit = false;
-}
-
-export function commitNow() {
-  if (isAgentSpeaking()) return;
-  if (!canCommit()) return;
-  console.log("commitNow");
-  wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
-
-  // Wait for ASR to finish before creating the response
-  waitingForTranscript = true;
-  if (transcriptFallbackTimer) clearTimeout(transcriptFallbackTimer);
-  transcriptFallbackTimer = setTimeout(() => {
-    if (waitingForTranscript) {
-      waitingForTranscript = false;
-    }
-  }, 1800);
-
-  resetCommitBudget();
 }
 
 function bufferToArrayBuffer(buf: Buffer): ArrayBuffer {
