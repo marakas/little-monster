@@ -32,13 +32,24 @@ type Phase = "intro" | "whiteboard_gate" | "interview";
 let currentPhase: Phase = "intro";
 let lastPhaseEmitAt = 0;
 
+// ---------- inactivity watchdog ----------
+const INACTIVITY_WARN_MS = Number(
+  process.env.INACTIVITY_WARN_MS ?? 5 * 60 * 1000
+); // 5m
+const INACTIVITY_ESC_MS = Number(
+  process.env.INACTIVITY_ESC_MS ?? 8 * 60 * 1000
+); // 8m
+let lastActivityAt = Date.now(); // updated on transcript/vision
+let inactivityStage: 0 | 5 | 8 = 0; // 0 = fresh, 5 = warned, 8 = escalated
+
 // ---------- gating (whiteboard -> interview) ----------
 const GOOD_STATES = new Set<VisionState>(["blank", "has_content"]);
 const GATE_WINDOW_MS = 15_000;
 const GATE_MIN_SEP_MS = 5_000;
 const REEMIT_SUPPRESS_MS = 30_000;
-
 let goodBoardSamples: number[] = [];
+let lastRubric: RubricReport | null = null;
+
 function pruneOld(now = Date.now()) {
   goodBoardSamples = goodBoardSamples.filter((t) => now - t <= GATE_WINDOW_MS);
 }
@@ -106,21 +117,28 @@ let lastOverlayKey: string | null = null;
 let lastOverlayAt = 0;
 const OVERLAY_SUPPRESS_MS = 30_000;
 
-function maybeOverlayFromGap(gap: string | undefined, ttlMs = 120_000) {
-  if (!gap) return;
-  if (currentPhase !== "interview") return; // nudge only during interview
-  const key = gap.trim().toLowerCase();
+function maybeOverlay(text: string, key: string, ttlMs = 120_000) {
   const now = Date.now();
-  if (lastOverlayKey === key && now - lastOverlayAt < OVERLAY_SUPPRESS_MS)
-    return;
+  // hard rate-limit to avoid back-to-back overlays regardless of key
+  if (now - lastOverlayAt < OVERLAY_SUPPRESS_MS) return;
 
-  lastOverlayKey = key;
+  const k = key.trim().toLowerCase();
+  if (lastOverlayKey === k && now - lastOverlayAt < OVERLAY_SUPPRESS_MS) return;
+
+  lastOverlayKey = k;
   lastOverlayAt = now;
+
   parentPort!.postMessage(<ControlAction>{
     type: "SET_OVERLAY",
-    text: `Next: ${gap}. Keep it to 2 sentences.`,
+    text,
     ttlMs,
   });
+}
+
+function maybeOverlayFromGap(gap: string | undefined, ttlMs = 120_000) {
+  if (!gap) return;
+  if (currentPhase !== "interview") return; // only nudge during interview
+  maybeOverlay(`Next: ${gap}. Keep it to 2 sentences.`, `gap:${gap}`, ttlMs);
 }
 
 // ---------- OpenAI client ----------
@@ -209,7 +227,7 @@ Produce a JSON object with:
     jsonText = resp.output_text ?? "{}";
     const parsed = JSON.parse(jsonText);
     const report = toRubricReport(parsed);
-
+    lastRubric = report;
     parentPort!.postMessage({ type: "RUBRIC_UPDATE", report } as ControlAction);
     // Emit a compact overlay using the top gap (if any)
     maybeOverlayFromGap(report.top_gaps?.[0]);
@@ -223,6 +241,27 @@ Produce a JSON object with:
   } finally {
     scheduleNextAssessment();
   }
+}
+
+function buildInactivityNudge(): string {
+  // If we aren't in interview yet, guide them to share a board
+  if (currentPhase !== "interview") {
+    return "Please share your screen and open a whiteboard (Miro/Excalidraw/Jamboard/Figma) so we can start sketching.";
+  }
+
+  // Prefer the top gap from the latest rubric if available
+  const gap = lastRubric?.top_gaps?.[0];
+  if (gap) {
+    return `Let's tackle this next: ${gap}.`;
+  }
+
+  // If vision says no/unknown board, steer to draw
+  if (lastVisionState === "none" || lastVisionState === "unknown") {
+    return "Let's bring up a whiteboard and sketch the high-level services and data flows.";
+  }
+
+  // Safe default concrete prompt
+  return "Let's walk the media pipeline: upload → scan → transcode → store → CDN.";
 }
 
 // ---------- hello overlay ----------
@@ -239,6 +278,8 @@ parentPort.on("message", (ev: ControlEvent) => {
       tickCount = 0;
       transcriptLines = 0;
       transcriptChars = 0;
+      lastActivityAt = Date.now();
+      inactivityStage = 0;
       lastVisionState = null;
       lastVisionComponents = 0;
       lastVisionSummary = null;
@@ -252,8 +293,34 @@ parentPort.on("message", (ev: ControlEvent) => {
 
     case "TICK": {
       tickCount += 1;
+
+      // existing checks
       maybeAdvanceToInterview();
       if (Date.now() >= nextAssessAt) void runRubricAssessment();
+
+      // ---- inactivity watchdog ----
+      const now = Date.now();
+      const idleFor = now - lastActivityAt;
+
+      if (idleFor >= INACTIVITY_ESC_MS && inactivityStage < 8) {
+        const text = buildInactivityNudge();
+        maybeOverlay(text, `inactivity:8:${currentPhase}`, 180_000); // longer TTL on escalation
+        inactivityStage = 8;
+        console.log(
+          `[control] INACTIVITY escalation overlay after ${Math.round(
+            idleFor / 1000
+          )}s`
+        );
+      } else if (idleFor >= INACTIVITY_WARN_MS && inactivityStage < 5) {
+        const text = buildInactivityNudge();
+        maybeOverlay(text, `inactivity:5:${currentPhase}`, 120_000);
+        inactivityStage = 5;
+        console.log(
+          `[control] INACTIVITY warning overlay after ${Math.round(
+            idleFor / 1000
+          )}s`
+        );
+      }
 
       if (tickCount % 12 === 0) {
         console.log(
@@ -275,6 +342,8 @@ parentPort.on("message", (ev: ControlEvent) => {
           ev.text.length
         } chars): "${preview}${ev.text.length > 120 ? "…" : ""}"`
       );
+      lastActivityAt = Date.now();
+      inactivityStage = 0;
       break;
     }
 
@@ -298,6 +367,8 @@ parentPort.on("message", (ev: ControlEvent) => {
           (ev.summary ?? "").length > 160 ? "…" : ""
         }"`
       );
+      lastActivityAt = Date.now();
+      inactivityStage = 0;
       break;
     }
 
