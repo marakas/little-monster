@@ -60,7 +60,10 @@ export async function stopMeetBot() {
   // ✅ **Stop all monitoring immediately** by setting isBotRunning to false early
   console.log("🛑 Stopping all monitoring functions...");
   state.isBotRunning = false;
-
+  try {
+    state.stopTick?.();
+  } catch {}
+  state.stopTick = undefined;
   try {
     if (state.stopTimeout) {
       clearTimeout(state.stopTimeout);
@@ -71,7 +74,7 @@ export async function stopMeetBot() {
       clearInterval(state.muxWatchdog);
       state.muxWatchdog = null;
     }
-    
+
     console.log("⏹️ Calling stopSimpleScreenshots...");
 
     stopScreencastCapture();
@@ -218,6 +221,10 @@ export async function stopMeetBot() {
     state.isBotPaused = false;
     state.isClosing = false;
     state.meetingId = null;
+    try {
+      state.stopTick?.();
+    } catch {}
+    state.stopTick = undefined;
     if (state.heartbeatInterval) {
       clearInterval(state.heartbeatInterval);
       state.heartbeatInterval = null;

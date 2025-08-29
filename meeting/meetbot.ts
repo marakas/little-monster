@@ -59,6 +59,13 @@ import {
 
 import { joinGoogleMeet, clickMeetGotIt } from "./platforms/joinGoogleMeet.ts";
 import { enableStreamingMic } from "./micStreaming.ts";
+import { Worker } from "node:worker_threads";
+import { setOverlay, setPhase, type Phase } from "./realtimeClient.ts";
+import type { ControlAction, ControlEvent } from "./control/control.schema.ts";
+
+let latestRubricReport:
+  | import("./control/control.schema.js").RubricReport
+  | null = null;
 
 let wasSpeaking = false;
 let lastSpeechAt = Date.now();
@@ -94,6 +101,19 @@ Key areas expected:
 - Observability (metrics/traces/alerts) and degradation levers
 - AuthN/Z, privacy, abuse mitigation basics
 `.trim();
+
+function resolveControlWorkerPath(): string {
+  // If you ever add a build step later, this will prefer dist JS.
+  const candidates = [
+    path.resolve(process.cwd(), "dist", "control", "control.worker.js"),
+    path.resolve(process.cwd(), "control", "control.worker.ts"),
+    path.resolve(process.cwd(), "control", "control.worker.js"),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error("control worker not found (tried dist/*.js and source *.ts)");
+}
 
 function appendTranscript(line: string) {
   if (!line) return;
@@ -209,43 +229,21 @@ export async function startMeetBot(
     });
 
     registerAssessmentProvider(async () => {
-      const now = Date.now();
-      if (now - lastAssessAt < ASSESS_COOLDOWN_MS) {
-        return { ok: true, live: null }; // quiet success to avoid spamming the model
+      // Surface the worker’s latest rubric to the tool
+      if (!latestRubricReport) {
+        return { ok: true, live: null };
       }
-      lastAssessAt = now;
-
-      const imagePath = latestScreenshotPath;
-      if (!imagePath) {
-        return {
-          ok: true,
-          live: null,
-          diagram_state: "unknown",
-          diagram_components_count: 0,
-        };
-      }
-
-      try {
-        const out = await analyzeSnapshot({
-          imagePath,
-          transcriptText: rollingTranscript || "",
-          requirementsText: INSTAGRAM_REQUIREMENTS,
-        });
-
-        const diagramState = out.whiteboard?.state ?? "unknown";
-        const compCount = Array.isArray(out.diagram?.components)
-          ? out.diagram.components.length
-          : 0;
-
-        return {
-          ok: true,
-          live: out.live || null,
-          diagram_state: diagramState,
-          diagram_components_count: compCount,
-        };
-      } catch (e: any) {
-        return { ok: false, error: String(e?.message || e) };
-      }
+      const live = {
+        scores: (latestRubricReport.scores || []).map((s) => ({
+          category: s.label,
+          score: s.score,
+          comment: s.justification,
+        })),
+        top_gaps: latestRubricReport.top_gaps || [],
+        suggested_next_question:
+          latestRubricReport.suggested_next_question || undefined,
+      };
+      return { ok: true, live };
     });
 
     // ✅ Store platform in state for use across modules
@@ -277,17 +275,73 @@ export async function startMeetBot(
 
     await initRealtime(process.env.OPENAI_API_KEY!);
 
+    // --- Start Control Worker (simple proof-of-life overlay) ---
+    let controlWorker: Worker | null = null;
+    const postToWorker = (msg: ControlEvent) => {
+      try {
+        controlWorker?.postMessage(msg);
+      } catch (e) {}
+    };
+    try {
+      const workerPath = resolveControlWorkerPath();
+      controlWorker = new Worker(workerPath);
+      controlWorker.on("message", (msg: ControlAction) => {
+        if (!msg || typeof msg !== "object") return;
+        switch (msg.type) {
+          case "SET_OVERLAY":
+            setOverlay(msg.text, msg.ttlMs);
+            break;
+          case "SET_PHASE":
+            // Coerce to Phase union used by realtimeClient
+            setPhase(msg.phase as Phase);
+            break;
+          case "RUBRIC_UPDATE":
+            latestRubricReport = msg.report;
+
+            try {
+              if (state.sessionDir) {
+                const p = path.join(state.sessionDir, "rubric.latest.json");
+                fs.writeFileSync(p, JSON.stringify(msg.report, null, 2));
+              }
+            } catch {}
+            break;
+          case "END_REPORT":
+            console.log("[control] END_REPORT received");
+            try {
+              if (state.sessionDir) {
+                const p = path.join(state.sessionDir, "rubric.final.json");
+                fs.writeFileSync(p, JSON.stringify(msg.report, null, 2));
+              }
+            } catch {}
+            break;
+        }
+      });
+      controlWorker.on("error", (e) =>
+        console.error("[control] worker error:", e)
+      );
+      controlWorker.on("exit", (code) =>
+        console.log("[control] worker exit:", code)
+      );
+      postToWorker({ type: "HELLO", meetingId });
+    } catch (e) {
+      console.warn("[control] failed to start worker:", e);
+    }
+
     let lastTtsAt = 0;
     // Subscribe to Realtime events (transcripts, etc.)
     onRealtimeEvent((ev: any) => {
-      // Depending on SDK version this name can differ.
       if (
         ev?.type === "input_audio_transcription.completed" &&
         ev?.transcript
       ) {
         appendTranscript(ev.transcript);
+        postToWorker({
+          type: "TRANSCRIPT_APPENDED",
+          ts: Date.now(),
+          text: String(ev.transcript || ""),
+        });
 
-        // (optional) also persist to your final transcription log
+        // Also persist to your final transcription log
         try {
           if (state.transcriptionLogPath) {
             fs.appendFileSync(state.transcriptionLogPath, ev.transcript + "\n");
@@ -585,6 +639,12 @@ export async function startMeetBot(
 
     console.log("📡 Bot is now listening to the meeting...");
 
+    // Lightweight periodic tick for the control worker
+    const tick = setInterval(() => {
+      postToWorker({ type: "TICK", ts: Date.now() });
+    }, 5_000);
+    state.stopTick = () => clearInterval(tick);
+
     // Start super-simple screenshots (1 fps is fine for diagram detection)
     await startScreencastCapture(state.page!, state.sessionDir!, {
       fps: 0.33, // 1 every ~3s (tune this)
@@ -636,7 +696,16 @@ export async function startMeetBot(
           console.log(
             `[vision] summary: ${res?.summary?.slice(0, 200) || "<empty>"}`
           );
-          //await sendUserText(`[Vision] ${res.summary}`);
+          // → Forward whiteboard/diagram state to the control worker
+          postToWorker({
+            type: "VISION_UPDATE",
+            ts: Date.now(),
+            state: res?.whiteboard?.state ?? "unknown",
+            summary: res?.summary,
+            componentsCount: Array.isArray(res?.diagram?.components)
+              ? res!.diagram!.components.length
+              : 0,
+          });
         } catch (e: any) {
           console.error("[vision] analysis failed:", e?.message || e);
         }

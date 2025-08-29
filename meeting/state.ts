@@ -42,6 +42,7 @@ const state = {
   primaryAudioActive: false, // when FFmpeg starts streaming
   sessionDir: null as string | null, // Current meeting session directory
   stopTimeout: null as NodeJS.Timeout | null, // Timeout for stopping bot after max duration
+  stopTick: undefined as undefined | (() => void),
   transcriptionLog: [] as string[], // Store transcriptions
   transcriptionLogPath: null as string | null, // Path to AI-enhanced final transcription log file
   chunkedTranscriptionLogPath: null as string | null, // Path to real-time chunked transcription log file
