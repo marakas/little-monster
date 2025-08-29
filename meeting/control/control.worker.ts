@@ -243,6 +243,38 @@ Produce a JSON object with:
   }
 }
 
+async function emitFinalReport(reason?: string) {
+  try {
+    // If we never ran one or it’s very old, try one last quick pass.
+    const FRESH_MS = 90_000;
+    const needFresh =
+      !lastRubric || Date.now() - (lastRubric.updated_at || 0) > FRESH_MS;
+
+    if (needFresh && transcriptChars >= 60) {
+      // run a synchronous final pass (don’t reschedule)
+      await runRubricAssessment();
+    }
+
+    // fall back to a minimal stub if still missing
+    const report: RubricReport = lastRubric ?? {
+      scenario: "Instagram",
+      overall: 0,
+      scores: [],
+      top_gaps: [],
+      summary: "No rubric available (insufficient activity).",
+      updated_at: Date.now(),
+      suggested_next_question: undefined,
+    };
+
+    parentPort!.postMessage(<ControlAction>{ type: "END_REPORT", report });
+    console.log(
+      `[control] END_REPORT sent${reason ? ` (reason=${reason})` : ""}`
+    );
+  } catch (e: any) {
+    console.warn("[control] emitFinalReport failed:", e?.message || e);
+  }
+}
+
 function buildInactivityNudge(): string {
   // If we aren't in interview yet, guide them to share a board
   if (currentPhase !== "interview") {
@@ -369,6 +401,11 @@ parentPort.on("message", (ev: ControlEvent) => {
       );
       lastActivityAt = Date.now();
       inactivityStage = 0;
+      break;
+    }
+
+    case "SESSION_END": {
+      void emitFinalReport(ev.reason);
       break;
     }
 

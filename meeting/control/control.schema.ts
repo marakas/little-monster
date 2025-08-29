@@ -15,7 +15,8 @@ export type ControlEvent =
       state: "none" | "blank" | "has_content" | "unknown";
       summary?: string;
       componentsCount?: number;
-    };
+    }
+  | { type: "SESSION_END"; reason?: string };
 
 // ---- Rubric types (Worker <-> Main) ----
 export type RubricScore = {

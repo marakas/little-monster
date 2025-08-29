@@ -285,6 +285,7 @@ export async function startMeetBot(
     try {
       const workerPath = resolveControlWorkerPath();
       controlWorker = new Worker(workerPath);
+      state.controlWorker = controlWorker;
       controlWorker.on("message", (msg: ControlAction) => {
         if (!msg || typeof msg !== "object") return;
         switch (msg.type) {

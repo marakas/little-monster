@@ -2,6 +2,7 @@ import type { Transform } from "node:stream";
 import type { FfmpegCommand } from "fluent-ffmpeg";
 import type { launch } from "puppeteer-stream";
 import { EventEmitter } from "node:events";
+import type { Worker } from "node:worker_threads";
 
 export type Browser = Awaited<ReturnType<typeof launch>>;
 export type Page = Awaited<ReturnType<Browser["newPage"]>>;
@@ -28,6 +29,7 @@ const state = {
   audioProcessingInterval: null as NodeJS.Timeout | null, // Audio processing interval
   currentRecordingPath: null as string | null, // Path to the recorded video/audio
   currentSpeaker: "User", // Current active speaker
+  controlWorker: null as Worker | null,
   dismissed: false, // dismissed the 'people may see your screen differently' popup
   hasJoined: false,
   heartbeatInterval: null as NodeJS.Timeout | null, // Heartbeat updater interval
