@@ -76,6 +76,17 @@ function maybeAdvanceToInterview(now = Date.now()) {
     phase: "interview",
     reason: "Whiteboard stabilized as blank/has_content (twice, spaced).",
   });
+
+  // NEW: make the interviewer lead with a clear plan
+  parentPort!.postMessage({
+    type: "SET_OVERLAY",
+    text: [
+      "Agenda: constraints → data model → media pipeline → feed → caching/scale → observability/safety.",
+      "I will lead and timebox each part. Start by confirming baseline assumptions, then give a concise data model.",
+    ].join(" "),
+    ttlMs: 90_000,
+  });
+
   console.log(
     `[control] PHASE → interview (samples=${
       goodBoardSamples.length
@@ -320,6 +331,11 @@ parentPort.on("message", (ev: ControlEvent) => {
       currentPhase = "intro";
       lastPhaseEmitAt = 0;
       goodBoardSamples = [];
+      parentPort!.postMessage({
+        type: "SET_OVERLAY",
+        text: "Start with the ground rules, invite questions, then wait for whiteboard.",
+        ttlMs: 45_000,
+      });
       scheduleNextAssessment();
       console.log(`[control] HELLO meetingId=${ev.meetingId ?? "<none>"}`);
       break;
@@ -370,6 +386,7 @@ parentPort.on("message", (ev: ControlEvent) => {
       transcriptLines += 1;
       transcriptChars += ev.text.length;
       pushTranscript(ev.ts || Date.now(), ev.text);
+
       const preview = ev.text.replace(/\s+/g, " ").slice(0, 120);
       console.log(
         `[control] TRANSCRIPT line#${transcriptLines} (+${
@@ -378,6 +395,35 @@ parentPort.on("message", (ev: ControlEvent) => {
       );
       lastActivityAt = Date.now();
       inactivityStage = 0;
+
+      // NEW: lightweight "ack" detector to leave intro
+      if (currentPhase === "intro") {
+        const ack =
+          /\b(yes|ok|okay|sure|sounds good|understand|got it|ready)\b/i;
+        const askedAQuestion =
+          /(\?|could you|can you|what about|how do|how would)/i;
+
+        // Heuristics: either explicit ack OR user has engaged with ≥1 lines and not silence
+        if (
+          ack.test(ev.text) ||
+          transcriptLines >= 2 ||
+          askedAQuestion.test(ev.text)
+        ) {
+          currentPhase = "whiteboard_gate";
+          lastPhaseEmitAt = Date.now();
+          parentPort!.postMessage({
+            type: "SET_PHASE",
+            phase: "whiteboard_gate",
+            reason: "Intro acknowledged; prompting to share whiteboard.",
+          });
+          maybeOverlay(
+            "Please share your screen and open a whiteboard (Miro/Excalidraw/Jamboard/Figma).",
+            "wb:prompt",
+            120_000
+          );
+        }
+      }
+
       break;
     }
 
@@ -388,9 +434,18 @@ parentPort.on("message", (ev: ControlEvent) => {
 
       if (GOOD_STATES.has(ev.state)) {
         noteGoodBoard(ev.ts ?? Date.now());
+        // Existing: will call maybeAdvanceToInterview() → SET_PHASE("interview")
         maybeAdvanceToInterview();
       } else {
         pruneOld();
+        // NEW: nudge only during whiteboard_gate
+        if (currentPhase === "whiteboard_gate") {
+          maybeOverlay(
+            "I’m not seeing a whiteboard yet—please share your screen with Miro/Excalidraw/Jamboard/Figma.",
+            "wb:nudge",
+            60_000
+          );
+        }
       }
 
       const sum = (ev.summary ?? "").replace(/\s+/g, " ").slice(0, 160);

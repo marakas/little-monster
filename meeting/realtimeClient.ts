@@ -1,10 +1,23 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 import { RealtimeAgent, RealtimeSession } from "@openai/agents/realtime";
 import { tool } from "@openai/agents";
+
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
 import { PassThrough } from "stream";
 
-ffmpeg.setFfmpegPath(ffmpegPath!);
+const DEFAULT_LANGUAGE = process.env.INTERVIEW_LANG ?? "en-US";
+const DEFAULT_VOICE = process.env.INTERVIEW_VOICE ?? "alloy"; // any valid realtime voice
+
+const PROMPT_DEBUG = process.env.PROMPT_DEBUG === "1";
+const PROMPT_DEBUG_PREVIEW = Number(process.env.PROMPT_DEBUG_PREVIEW || 320);
+
+let PROMPT_LOG_DIR: string | null = null;
+export function setPromptLogDir(dir: string | null) {
+  PROMPT_LOG_DIR = dir;
+}
 
 let agentSpeaking = false;
 let _interviewStarted = false;
@@ -16,6 +29,8 @@ type WhiteboardState = "none" | "blank" | "has_content" | "unknown";
 type VisionReply = { state: WhiteboardState; summary?: string; app?: string };
 
 let visionProvider: (() => Promise<VisionReply>) | null = null;
+
+ffmpeg.setFfmpegPath(ffmpegPath!);
 export function registerVisionProvider(fn: () => Promise<VisionReply>) {
   visionProvider = fn;
 }
@@ -75,11 +90,12 @@ EVALUATION CHECKLIST (INTERNAL — DO NOT REVEAL):
 
 const STICKY_GUARDRAILS = `
 STICKY GUARDRAILS:
-- The ONLY scenario is "${SCENARIO_TITLE}". Never substitute another problem (e.g., URL shortener).
-- If the candidate proposes a different problem, reply briefly: "For calibration, let's stick with Instagram."
+- The ONLY scenario is "Design Instagram". Never substitute another problem.
+- Do NOT call tools; a supervisor controls phases via overlays.
+- The interviewer controls the flow and timeboxing. Never ask the candidate to choose the scope or decide what to cover.
+- Always speak and write ONLY in English (${DEFAULT_LANGUAGE}). Never switch languages unless a Supervisor overlay sets LANG=...
 - Keep responses concise (≤3 sentences) unless deeper detail is requested.
-- Use "request_vision_check" whenever the whiteboard isn’t clearly visible.
-- During interview, call "pull_live_assessment" roughly every 60–90 seconds or whenever the candidate finishes a major chunk (requirements, data model, feed, media pipeline). If the result includes "top_gaps", ask one targeted question that addresses the highest-priority gap. Use "suggested_next_question" if appropriate.
+- Follow the current PHASE and any "Supervisor hint".
 `;
 
 const BASE_PROMPT = `
@@ -90,46 +106,67 @@ Never reveal internal rubrics. Speak in English.`;
 
 const STAGE_PROMPTS = {
   intro: `
-PHASE: Interview Intro & Rules
-Goal: Ensure the candidate understands the interview format.
-Checklist for success:
-1) Explain: "This is a system design interview. Please share your screen and use a whiteboard app to design as you explain. You have ~1 hour."
-2) Confirm understanding. Ask if they have questions.
-3) Instruct them to share their screen and open a whiteboard app (Miro, Excalidraw, Jamboard, Figma canvas, etc).
-4) When they verbally confirm understanding, call the tool "advance_phase" with next_phase="whiteboard_gate" and a short reason.
-Do not move on until they acknowledge the rules.
+PHASE: Interview Intro & Ground Rules
+Goal: Explain format, invite questions, and establish that YOU (the interviewer) will lead.
+
+Say (briefly):
+- "This is a system design interview. I will lead the session and timebox each section."
+- "Please share your screen and open a whiteboard while we talk."
+
+If they ask questions, answer succinctly and then wait.
+Do not advance phases yourself; a supervisor will change phases.
 `,
 
   whiteboard_gate: `
 PHASE: Screen Share & Whiteboard Gate
-Goal: Verify the candidate is sharing a readable whiteboard.
+Goal: Ensure a readable whiteboard is visible.
 
-Immediately call the tool "request_vision_check". If the returned state is:
-- "blank" or "has_content": call "advance_phase" to "interview".
-- "none" or "unknown": briefly instruct the candidate to share a whiteboard (Miro/Excalidraw/Jamboard/Figma canvas), wait for a short user acknowledgement, and CALL "request_vision_check" AGAIN within ~5–8 seconds.
+Say (briefly if needed):
+- "Please share your screen and open Miro/Excalidraw/Jamboard/Figma."
+- "Add a title: 'Instagram — High-level design'."
 
-Keep repeating this cycle until the state is "blank" or "has_content".
-Do not move to interview until the tool confirms one of those states.
+Do not advance phases yourself; a supervisor will detect the whiteboard and move phases.
 `,
 
   interview: `
 PHASE: Main Interview Loop
-Scenario: "${SCENARIO_TITLE}" (fixed — do not change).
-Behavior:
-- Let the candidate drive; ask clarifying questions when something in the RUBRIC is missing.
-- Encourage discovering functional & non-functional requirements first.
-- Maintain time awareness and nudge pacing when necessary.
-- If screen/whiteboard disappears, use "request_vision_check" and guide them back.
-Success path:
-- Keep the discussion on ${SCENARIO_TITLE}. Do not advance phases automatically.
+Scenario: "Design Instagram" (fixed).
+You (the interviewer) drive the agenda. Do NOT ask the candidate to choose what to cover.
+
+Baseline requirements to assume (state them once, briefly):
+- Core features: post photos/videos with captions; follow; like; comment; notifications; home feed with ranking; search/explore; profiles; basic moderation.
+- Scale/NFRs: tens of millions DAU (global), mobile-first; home feed <200ms P50 at edge; high availability; eventual consistency fine for counters/timelines.
+- Media-heavy: upload → scan → transcode variants → CDN delivery.
+
+Agenda (lead, timebox, and explicitly transition):
+1) Clarify constraints: confirm any critical assumptions are acceptable (≤30s).
+2) Data model & storage: users, posts, follows, likes, comments; indices; hot keys; partitioning (2–3 minutes).
+3) Media pipeline: upload, virus scan, transcode variants, metadata, CDN; backpressure/idempotency (3–4 minutes).
+4) Feed generation: push/pull, fanout/fanin, ranking signals, pagination, cold start (3–4 minutes).
+5) Caching & scale: CDN/edge, Redis timelines, invalidation; sharding, queues, retries (3–4 minutes).
+6) Observability & safety: metrics/traces/SLOs, degradation levers; authN/Z, privacy/abuse basics (2–3 minutes).
+
+Control language you can use:
+- "Great, let’s move to the data model next."
+- "Timebox this to ~3 minutes—give me the entities and hot keys."
+- "Now the media pipeline end-to-end; call out backpressure points."
+- "Next: feed strategy (push/pull/fanout). Keep it concise."
+
+If the whiteboard disappears, briefly ask them to bring it back; do not change phases yourself.
+Follow any 'Supervisor hint'.
 Opening line:
-- "Let's design Instagram. Start by clarifying requirements and constraints you want to assume."
+- "We’ll proceed in that order. Start by confirming the baseline assumptions are acceptable, then give me your data model at a high level."
 `,
 } as const satisfies Record<Phase, string>;
 
 // Compose per-phase instructions without losing base text.
 function makeInstructions(phase: Phase) {
+  const languageLine =
+    `LANGUAGE: English (${DEFAULT_LANGUAGE}). ` +
+    `Always speak and write ONLY in English. ` +
+    `Do not switch languages unless a Supervisor overlay explicitly sets LANG=...`;
   return [
+    languageLine,
     BASE_PROMPT,
     STICKY_GUARDRAILS,
     SCENARIO_BLOCK,
@@ -140,6 +177,7 @@ function makeInstructions(phase: Phase) {
     .trim();
 }
 
+/*
 // -----------------------------
 // Tools exposed to the model
 // -----------------------------
@@ -189,6 +227,7 @@ const requestVisionCheck = tool({
   },
 });
 
+
 const advancePhase = tool({
   name: "advance_phase",
   description:
@@ -215,6 +254,16 @@ const agent = new RealtimeAgent({
   name: "Assistant",
   instructions: makeInstructions("intro"),
   tools: [requestVisionCheck, advancePhase, pullLiveAssessment],
+});
+*/
+
+// ---------------
+// Realtime agent
+// ---------------
+const agent = new RealtimeAgent({
+  name: "Assistant",
+  instructions: makeInstructions("intro"),
+  tools: [],
 });
 
 export const wsSession = new RealtimeSession(agent, {
@@ -311,16 +360,19 @@ export async function initRealtime(apiKey: string) {
   // Ensure current phase instructions are set (intro by default)
   wsSession.transport.sendEvent({
     type: "session.update",
-    session: { instructions: makeInstructions(currentPhase) },
+    session: {
+      instructions: makeInstructions(currentPhase),
+      voice: DEFAULT_VOICE,
+    },
   });
 }
 
 export async function startPhasedInterview() {
   if (_interviewStarted) return;
   _interviewStarted = true;
-  // One-shot opener. Auto turns will handle subsequent replies.
   speakOnce(
-    `Phase: intro. Explain the format in ≤3 sentences, ask if they have questions, and prompt them to share a whiteboard app. Then wait.`
+    `Respond ONLY in English (${DEFAULT_LANGUAGE}). ` +
+      `Phase: intro. I will lead and timebox the session. Please share your screen and open a whiteboard. Any quick questions before we begin?`
   );
 }
 
@@ -448,16 +500,62 @@ function applyInstructions() {
   const overlay = overlayText
     ? `\n\n# Supervisor hint (temporary)\n${overlayText}`
     : "";
+  const finalInstructions = (base + overlay).trim();
+
+  // DEBUG preview
+  if (PROMPT_DEBUG) {
+    const preview = finalInstructions
+      .replace(/\s+/g, " ")
+      .slice(0, PROMPT_DEBUG_PREVIEW);
+    console.log(
+      `[prompt][${currentPhase}] len=${
+        finalInstructions.length
+      } preview="${preview}${
+        finalInstructions.length > PROMPT_DEBUG_PREVIEW ? "…" : ""
+      }"`
+    );
+    if (overlayText) {
+      const oPrev = overlayText
+        .replace(/\s+/g, " ")
+        .slice(0, PROMPT_DEBUG_PREVIEW);
+      console.log(
+        `[prompt][overlay] ttl=${
+          overlayClearTimer ? "active" : "n/a"
+        } text="${oPrev}${
+          overlayText.length > PROMPT_DEBUG_PREVIEW ? "…" : ""
+        }"`
+      );
+    }
+  }
+
+  // Persist full instructions for traceability
+  if (PROMPT_LOG_DIR) {
+    try {
+      const t = new Date().toISOString().replace(/[:.]/g, "-");
+      const file = path.join(
+        PROMPT_LOG_DIR,
+        `instructions_${t}_${currentPhase}.md`
+      );
+      fs.writeFileSync(file, finalInstructions, "utf8");
+    } catch (e) {
+      if (PROMPT_DEBUG)
+        console.warn(
+          "[prompt] failed to write instructions file:",
+          (e as any)?.message || e
+        );
+    }
+  }
+
   wsSession.transport.sendEvent({
     type: "session.update",
-    session: { instructions: base + overlay },
+    session: { instructions: finalInstructions },
   });
 }
 
 export function setPhase(next: Phase) {
   if (currentPhase === next) return;
+  if (PROMPT_DEBUG) console.log(`[prompt] SET_PHASE ${currentPhase} → ${next}`);
   currentPhase = next;
-  // clear any overlay on phase change
   overlayText = null;
   if (overlayClearTimer) {
     clearTimeout(overlayClearTimer);
@@ -468,12 +566,24 @@ export function setPhase(next: Phase) {
 
 export function setOverlay(text: string, ttlMs = 120_000) {
   overlayText = (text || "").trim().slice(0, 400);
+  if (PROMPT_DEBUG) {
+    const prev = overlayText
+      .replace(/\s+/g, " ")
+      .slice(0, PROMPT_DEBUG_PREVIEW);
+    console.log(
+      `[prompt] SET_OVERLAY ttlMs=${ttlMs} text="${prev}${
+        overlayText.length > PROMPT_DEBUG_PREVIEW ? "…" : ""
+      }"`
+    );
+  }
   applyInstructions();
   if (overlayClearTimer) clearTimeout(overlayClearTimer);
   overlayClearTimer = setTimeout(() => {
     overlayText = null;
+    if (PROMPT_DEBUG)
+      console.log("[prompt] OVERLAY expired; re-applying base instructions");
     applyInstructions();
-  }, Math.max(10_000, ttlMs)); // min 10s
+  }, Math.max(10_000, ttlMs));
 }
 
 // Helper to trigger a one-shot model turn with optional per-turn instructions.
