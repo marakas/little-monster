@@ -10,13 +10,16 @@ import type {
   ControlEvent,
   ControlAction,
   RubricReport,
-} from "./control.schema";
+} from "./control.schema.ts";
 
 if (!parentPort)
   throw new Error("control.worker must be started as a worker thread");
 
 // ---------- paths ----------
-const RUBRIC_PATH = path.resolve(__dirname, "rubric.instagram.json");
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const RUBRIC_PATH = resolve(__dirname, "rubric.instagram.json");
 
 // ---------- minimal state ----------
 let tickCount = 0;
@@ -68,7 +71,7 @@ function maybeAdvanceToInterview(now = Date.now()) {
 
   currentPhase = "interview";
   lastPhaseEmitAt = now;
-  parentPort!.postMessage(<ControlAction>{
+  parentPort!.postMessage({
     type: "SET_PHASE",
     phase: "interview",
     reason: "Whiteboard stabilized as blank/has_content (twice, spaced).",
@@ -128,7 +131,7 @@ function maybeOverlay(text: string, key: string, ttlMs = 120_000) {
   lastOverlayKey = k;
   lastOverlayAt = now;
 
-  parentPort!.postMessage(<ControlAction>{
+  parentPort!.postMessage({
     type: "SET_OVERLAY",
     text,
     ttlMs,
@@ -148,8 +151,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 let rubricJson: any | null = null;
 async function getRubric() {
   if (!rubricJson) {
-    const raw = await readFile(RUBRIC_PATH, "utf8");
-    rubricJson = JSON.parse(raw);
+    rubricJson = JSON.parse(await readFile(RUBRIC_PATH, "utf8"));
   }
   return rubricJson;
 }
@@ -266,7 +268,7 @@ async function emitFinalReport(reason?: string) {
       suggested_next_question: undefined,
     };
 
-    parentPort!.postMessage(<ControlAction>{ type: "END_REPORT", report });
+    parentPort!.postMessage({ type: "END_REPORT", report });
     console.log(
       `[control] END_REPORT sent${reason ? ` (reason=${reason})` : ""}`
     );
@@ -297,7 +299,7 @@ function buildInactivityNudge(): string {
 }
 
 // ---------- hello overlay ----------
-parentPort.postMessage(<ControlAction>{
+parentPort.postMessage({
   type: "SET_OVERLAY",
   text: "👋 Control Worker online. Overlays are live.",
   ttlMs: 30_000,
