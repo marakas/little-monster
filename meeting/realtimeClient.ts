@@ -1,8 +1,8 @@
+//realtimeClient.ts
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { RealtimeAgent, RealtimeSession } from "@openai/agents/realtime";
-import { tool } from "@openai/agents";
 
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
@@ -21,6 +21,7 @@ export function setPromptLogDir(dir: string | null) {
 
 let agentSpeaking = false;
 let _interviewStarted = false;
+let realtimeArmed = false;
 
 // -----------------------------
 // Phase plumbing (inside agent)
@@ -42,6 +43,26 @@ export function onRealtimeEvent(cb: (ev: any) => void) {
 
 export const PHASES = ["intro", "whiteboard_gate", "interview"] as const;
 export type Phase = (typeof PHASES)[number];
+
+export function setRealtimeArmed(on: boolean) {
+  realtimeArmed = on;
+  wsSession.transport.sendEvent({
+    type: "session.update",
+    session: {
+      turn_detection: {
+        type: "semantic_vad", // keep a valid type
+        eagerness: "medium",
+        create_response: on, // disarm by setting false
+        interrupt_response: true,
+      },
+    },
+  });
+  console.log(
+    on
+      ? "[prompt] Realtime ARMED (create_response=true)"
+      : "[prompt] Realtime DISARMED (create_response=false)"
+  );
+}
 
 export type LiveAssessmentReply = {
   ok: boolean;
@@ -92,10 +113,13 @@ const STICKY_GUARDRAILS = `
 STICKY GUARDRAILS:
 - The ONLY scenario is "Design Instagram". Never substitute another problem.
 - Do NOT call tools; a supervisor controls phases via overlays.
-- The interviewer controls the flow and timeboxing. Never ask the candidate to choose the scope or decide what to cover.
-- Always speak and write ONLY in English (${DEFAULT_LANGUAGE}). Never switch languages unless a Supervisor overlay sets LANG=...
-- Keep responses concise (≤3 sentences) unless deeper detail is requested.
-- Follow the current PHASE and any "Supervisor hint".
+- Interviewer leads/timeboxes, but the candidate drives content.
+- Progressive disclosure: Do NOT volunteer requirements/NFRs unprompted.
+  • Answer ONLY what the candidate explicitly asks, in ≤1 sentence each.
+  • If they jump straight to design, ask them to state their assumed requirements/NFRs first (≤1 sentence).
+  • If they stall for ~20–30s, offer a gentle category nudge (e.g., "functional vs. non-functional? scale? data model?") without giving answers.
+- Always English (${DEFAULT_LANGUAGE}). Keep responses concise (≤3 sentences) unless asked for depth.
+- Follow current PHASE and any "Supervisor hint".
 `;
 
 const BASE_PROMPT = `
@@ -107,23 +131,23 @@ Never reveal internal rubrics. Speak in English.`;
 const STAGE_PROMPTS = {
   intro: `
 PHASE: Interview Intro & Ground Rules
-Goal: Explain format, invite questions, and establish that YOU (the interviewer) will lead.
+Goal: Set expectations. Invite questions. Do NOT front-load content.
 
 Say (briefly):
-- "This is a system design interview. I will lead the session and timebox each section."
-- "Please share your screen and open a whiteboard while we talk."
+- "This is a system design interview. I’ll lead and timebox sections."
+- "Please share your screen and open a whiteboard."
 
-If they ask questions, answer succinctly and then wait.
+If they ask questions, answer succinctly (≤1 sentence each) and then wait.
 Do not advance phases yourself; a supervisor will change phases.
+
 `,
 
   whiteboard_gate: `
 PHASE: Screen Share & Whiteboard Gate
 Goal: Ensure a readable whiteboard is visible.
 
-Say (briefly if needed):
-- "Please share your screen and open Miro/Excalidraw/Jamboard/Figma."
-- "Add a title: 'Instagram — High-level design'."
+Say (only if needed):
+- "Please share Miro/Excalidraw/Jamboard/Figma and add a title: 'Instagram — High-level design'."
 
 Do not advance phases yourself; a supervisor will detect the whiteboard and move phases.
 `,
@@ -131,31 +155,28 @@ Do not advance phases yourself; a supervisor will detect the whiteboard and move
   interview: `
 PHASE: Main Interview Loop
 Scenario: "Design Instagram" (fixed).
-You (the interviewer) drive the agenda. Do NOT ask the candidate to choose what to cover.
+You lead/timebox; the candidate elicits requirements. Do NOT pre-state requirements/NFRs unless asked.
 
-Baseline requirements to assume (state them once, briefly):
-- Core features: post photos/videos with captions; follow; like; comment; notifications; home feed with ranking; search/explore; profiles; basic moderation.
-- Scale/NFRs: tens of millions DAU (global), mobile-first; home feed <200ms P50 at edge; high availability; eventual consistency fine for counters/timelines.
-- Media-heavy: upload → scan → transcode variants → CDN delivery.
+Start:
+- "Before we dive in, what functional and non-functional requirements would you clarify or assume?"
 
-Agenda (lead, timebox, and explicitly transition):
-1) Clarify constraints: confirm any critical assumptions are acceptable (≤30s).
-2) Data model & storage: users, posts, follows, likes, comments; indices; hot keys; partitioning (2–3 minutes).
-3) Media pipeline: upload, virus scan, transcode variants, metadata, CDN; backpressure/idempotency (3–4 minutes).
-4) Feed generation: push/pull, fanout/fanin, ranking signals, pagination, cold start (3–4 minutes).
-5) Caching & scale: CDN/edge, Redis timelines, invalidation; sharding, queues, retries (3–4 minutes).
-6) Observability & safety: metrics/traces/SLOs, degradation levers; authN/Z, privacy/abuse basics (2–3 minutes).
+Progressive disclosure rules:
+- Answer only the questions asked, in ≤1 sentence each. No extra details.
+- If they skip requirements and start designing, prompt once: "State your assumed requirements/NFRs first, then we’ll proceed."
+- If they stall, give a category nudge (not answers): "Think functional vs. non-functional; scale/latency; data model; media flow; feed; caching; reliability."
 
-Control language you can use:
-- "Great, let’s move to the data model next."
-- "Timebox this to ~3 minutes—give me the entities and hot keys."
-- "Now the media pipeline end-to-end; call out backpressure points."
-- "Next: feed strategy (push/pull/fanout). Keep it concise."
+Agenda (you announce transitions, they supply content):
+1) Requirements/NFRs → confirm briefly (no extra info).
+2) Data model & storage → ask them to propose entities/indices/hot keys.
+3) Media pipeline → they outline upload → scan → transcode → store → CDN; you ask backpressure/idempotency follow-ups.
+4) Feed generation → push/pull/fanout/ranking/pagination; you challenge trade-offs.
+5) Caching & scale → edge/CDN/Redis, invalidation; sharding/queues/retries.
+6) Observability & safety → metrics/traces/SLOs; authN/Z, privacy/abuse basics.
 
-If the whiteboard disappears, briefly ask them to bring it back; do not change phases yourself.
+If the whiteboard disappears, ask them to bring it back; do not change phases yourself.
 Follow any 'Supervisor hint'.
 Opening line:
-- "We’ll proceed in that order. Start by confirming the baseline assumptions are acceptable, then give me your data model at a high level."
+- "Start by telling me which requirements/NFRs you’d clarify or assume."
 `,
 } as const satisfies Record<Phase, string>;
 
@@ -279,7 +300,7 @@ export const wsSession = new RealtimeSession(agent, {
     turnDetection: {
       type: "semantic_vad",
       eagerness: "medium",
-      createResponse: true, // allow the model to manage the turns
+      createResponse: false, // start DISARMED
       interruptResponse: true,
     },
   },
@@ -290,6 +311,15 @@ export const wsSession = new RealtimeSession(agent, {
   // When a model response starts/ends
   if (ev.type === "response.created") {
     console.log(`[response.created] id=${ev.response?.id || "?"}`);
+    // Guard: cancel any response before we've armed
+    if (!realtimeArmed && ev.response?.id) {
+      console.log("[prompt] Cancelling early response (not yet armed)");
+      wsSession.transport.sendEvent({
+        type: "response.cancel",
+        response_id: ev.response.id,
+      });
+      return;
+    }
     agentSpeaking = true;
   }
 
@@ -357,6 +387,9 @@ export async function initRealtime(apiKey: string) {
   }
   await wsSession.connect({ apiKey });
 
+  // Start DISARMED → no auto replies before we join the call
+  setRealtimeArmed(false);
+
   // Ensure current phase instructions are set (intro by default)
   wsSession.transport.sendEvent({
     type: "session.update",
@@ -372,7 +405,7 @@ export async function startPhasedInterview() {
   _interviewStarted = true;
   speakOnce(
     `Respond ONLY in English (${DEFAULT_LANGUAGE}). ` +
-      `Phase: intro. I will lead and timebox the session. Please share your screen and open a whiteboard. Any quick questions before we begin?`
+      `Phase: intro. I’ll lead and timebox the session. Please share your screen and open a whiteboard. Any quick questions before we begin?`
   );
 }
 

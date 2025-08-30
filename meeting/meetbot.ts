@@ -1,3 +1,4 @@
+//meetbot.ts
 import assert from "node:assert";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
@@ -17,6 +18,7 @@ import {
   isAgentSpeaking,
   onRealtimeAudio,
   sendRealtimeAudio,
+  setRealtimeArmed,
   commitNow,
 } from "./realtimeClient.ts";
 
@@ -101,6 +103,29 @@ Key areas expected:
 - Observability (metrics/traces/alerts) and degradation levers
 - AuthN/Z, privacy, abuse mitigation basics
 `.trim();
+
+let outboundPrimed = false;
+
+async function warmOutboundOnce() {
+  if (outboundPrimed) return;
+  const MODEL_OUT_RATE = 24000; // matches your onRealtimeAudio rate
+  const PAD_MS = 1000; // 1s of silence to wake WebRTC path
+  const padSamples = Math.floor((MODEL_OUT_RATE * PAD_MS) / 1000);
+  const zeroPad = new Array(padSamples).fill(0);
+
+  // queue on the page's audio graph
+  await state.page!.evaluate(
+    ({ rate, pad }) => (window as any).enqueuePcmAt(rate, pad),
+    { rate: MODEL_OUT_RATE, pad: zeroPad }
+  );
+  outboundPrimed = true;
+}
+
+async function waitForOutboundReady() {
+  // We are past "Ask to join" and have a Leave button, but give WebRTC a beat.
+  await delay(2000); // settle time for Meet to attach outbound track
+  await warmOutboundOnce(); // ensure sender path is hot before first TTS
+}
 
 function resolveControlWorkerPath(): string {
   // If you ever add a build step later, this will prefer dist JS.
@@ -744,8 +769,11 @@ export async function startMeetBot(
     }
 
     await waitUntilJoined(120_000);
-    await delay(1000);
-    await startPhasedInterview();
+    // Confirm the call UI is live, then prime outbound audio before speaking
+    await waitForOutboundReady();
+
+    setRealtimeArmed(true); // now safe to allow auto turns
+    await startPhasedInterview(); // this calls speakOnce(...) for the greeting
 
     // ✅ **Auto-stop the bot after the maximum duration**
     state.stopTimeout = setTimeout(() => {
