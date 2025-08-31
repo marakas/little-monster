@@ -75,6 +75,57 @@ const MEETING_UI_HINTS = [
   "teams",
 ];
 
+// --- Temporal stabilizer knobs (env-tunable) ---
+const LATCH_MS = Number(process.env.VISION_LATCH_MS || 8000); // keep "present" for this long after last positive
+const CLEAR_STREAK = Number(process.env.VISION_CLEAR_STREAK || 2); // how many consecutive "none" frames to truly clear
+
+// --- Stabilizer state (module-local; worker lives per session) ---
+let lastPresentAt = 0;
+let lastAcceptedState: VisionState = "blank";
+let noneStreak = 0;
+
+type VisionResult = {
+  state: VisionState;
+  app: string | null;
+  componentsCount: number;
+  summary: string;
+};
+
+// Apply hysteresis so brief misses don't drop to "none"
+function applyTemporalStabilizer(res: VisionResult): VisionResult {
+  const now = Date.now();
+
+  // Positive detections reset the latch and streak
+  if (res.state === "blank" || res.state === "has_content") {
+    lastPresentAt = now;
+    lastAcceptedState = res.state;
+    noneStreak = 0;
+    return res;
+  }
+
+  // res.state === "none": if within grace window and not too many misses, hold last good
+  if (now - lastPresentAt <= LATCH_MS && noneStreak < CLEAR_STREAK) {
+    noneStreak++;
+    const heldState = lastAcceptedState || "blank";
+    return {
+      state: heldState,
+      app: null, // app isn’t important; avoid confusing logs
+      componentsCount: 0,
+      summary: canonicalSummary({
+        present: true,
+        state: heldState === "has_content" ? "has_content" : "blank",
+        app: null,
+        components: 0,
+        modelSummary: res.summary,
+      }),
+    };
+  }
+
+  // Truly none: increment streak and pass through
+  noneStreak++;
+  return res;
+}
+
 function looksLikeMeetingUI(s: string): boolean {
   const t = s.toLowerCase();
   return MEETING_UI_HINTS.some((k) => t.includes(k));
@@ -221,24 +272,20 @@ function buildUserInstruction() {
 function canonicalSummary(decision: {
   present: boolean;
   state: "blank" | "has_content" | "unknown";
-  app: string | null;
+  app: string | null; // kept for signature compatibility, but not shown
   components: number;
   modelSummary: string;
 }) {
-  if (!decision.present) {
-    return "No whiteboard detected.";
-  }
+  if (!decision.present) return "No whiteboard detected.";
   const prefix =
     decision.state === "has_content"
       ? "Whiteboard detected (has content)."
       : "Whiteboard detected (blank).";
-  // Include app if we have a concrete one; otherwise keep it terse.
-  const appNote = decision.app ? ` App: ${decision.app}.` : "";
   const comps =
     decision.state === "has_content" && decision.components > 0
       ? ` ~${decision.components} components.`
       : "";
-  return `${prefix}${appNote}${comps}`;
+  return `${prefix}${comps}`;
 }
 
 async function callStructured(
@@ -429,7 +476,7 @@ export async function analyzeWhiteboardFromImage(
         ? ("blank" as const)
         : state;
 
-    return {
+    const out: VisionResult = {
       state: finalState,
       app: appByStrings,
       componentsCount,
@@ -438,9 +485,10 @@ export async function analyzeWhiteboardFromImage(
         state: finalState === "has_content" ? "has_content" : "blank",
         app: appByStrings,
         components: componentsCount,
-        modelSummary: summary, // not used, but passed for completeness
+        modelSummary: summary,
       }),
     };
+    return applyTemporalStabilizer(out);
   }
 
   // If in meeting UI, accept ONLY with strong evidence
@@ -450,7 +498,7 @@ export async function analyzeWhiteboardFromImage(
         ? "has_content"
         : "blank";
 
-    return {
+    const out: VisionResult = {
       state,
       app: appByStrings,
       componentsCount,
@@ -462,10 +510,11 @@ export async function analyzeWhiteboardFromImage(
         modelSummary: summary,
       }),
     };
+    return applyTemporalStabilizer(out);
   }
 
   // Otherwise, treat as none
-  return {
+  const out: VisionResult = {
     state: "none",
     app: null,
     componentsCount: 0,
@@ -477,4 +526,5 @@ export async function analyzeWhiteboardFromImage(
       modelSummary: summary,
     }),
   };
+  return applyTemporalStabilizer(out);
 }
