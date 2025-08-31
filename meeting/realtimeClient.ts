@@ -29,12 +29,7 @@ let realtimeArmed = false;
 type WhiteboardState = "none" | "blank" | "has_content" | "unknown";
 type VisionReply = { state: WhiteboardState; summary?: string; app?: string };
 
-let visionProvider: (() => Promise<VisionReply>) | null = null;
-
 ffmpeg.setFfmpegPath(ffmpegPath!);
-export function registerVisionProvider(fn: () => Promise<VisionReply>) {
-  visionProvider = fn;
-}
 
 // allow external listeners to observe raw session events if needed
 export function onRealtimeEvent(cb: (ev: any) => void) {
@@ -197,86 +192,6 @@ function makeInstructions(phase: Phase) {
     .join("\n\n")
     .trim();
 }
-
-/*
-// -----------------------------
-// Tools exposed to the model
-// -----------------------------
-const pullLiveAssessment = tool({
-  name: "pull_live_assessment",
-  description:
-    "Fetch the latest whiteboard+transcript assessment. Use this every ~60–90s during the interview or after big milestones. Returns gaps and a suggested next question.",
-  parameters: {
-    type: "object",
-    properties: {},
-    required: [],
-    additionalProperties: false,
-  },
-  execute: async () => {
-    if (!assessmentProvider)
-      return { ok: false, error: "No assessment provider registered." };
-    try {
-      const res = await assessmentProvider();
-      return res;
-    } catch (e: any) {
-      return { ok: false, error: String(e?.message || e) };
-    }
-  },
-});
-
-const requestVisionCheck = tool({
-  name: "request_vision_check",
-  description:
-    "Analyze the latest screenshot to determine whether a whiteboard app is visible and whether it is blank or already has content.",
-  parameters: {
-    type: "object",
-    properties: {},
-    required: [],
-    additionalProperties: false,
-  },
-  execute: async () => {
-    if (!visionProvider) {
-      return { ok: false, error: "Vision provider not registered." };
-    }
-    try {
-      const res = await visionProvider();
-      console.log(`[tool] request_vision_check → ${JSON.stringify(res)}`);
-      return { ok: true, ...res };
-    } catch (e: any) {
-      return { ok: false, error: String(e?.message || e) };
-    }
-  },
-});
-
-
-const advancePhase = tool({
-  name: "advance_phase",
-  description:
-    "Advance the interview to the next phase when success criteria are met.",
-  parameters: {
-    type: "object",
-    properties: {
-      next_phase: { type: "string", enum: PHASES as unknown as string[] },
-      reason: { type: "string" },
-    },
-    required: ["next_phase", "reason"],
-    additionalProperties: false,
-  },
-  execute: async ({ next_phase, reason }) => {
-    setPhase(next_phase as Phase);
-    return { ok: true, phase: next_phase, reason };
-  },
-});
-
-// ---------------
-// Realtime agent
-// ---------------
-const agent = new RealtimeAgent({
-  name: "Assistant",
-  instructions: makeInstructions("intro"),
-  tools: [requestVisionCheck, advancePhase, pullLiveAssessment],
-});
-*/
 
 // ---------------
 // Realtime agent

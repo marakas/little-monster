@@ -16,6 +16,7 @@ export type ControlEvent =
       summary?: string;
       componentsCount?: number;
     }
+  | { type: "VISION_SNAPSHOT"; ts: number; path: string }
   | { type: "SESSION_END"; reason?: string };
 
 // ---- Rubric types (Worker <-> Main) ----

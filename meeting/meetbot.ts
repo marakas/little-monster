@@ -27,13 +27,10 @@ import { audioCapture } from "./audioCapture.ts";
 import { writeWavFile } from "./upsample.ts";
 
 import {
-  registerVisionProvider,
   startPhasedInterview,
   registerAssessmentProvider,
   onRealtimeEvent,
 } from "./realtimeClient.ts";
-
-import { analyzeScreenshot, analyzeSnapshot } from "./pythonBridge.ts";
 
 import ffmpeg from "fluent-ffmpeg";
 import { launch } from "puppeteer-stream";
@@ -45,9 +42,7 @@ import {
 import { env } from "./env.ts";
 import state, {
   waitUntilJoined,
-  switchTo,
   notePrimaryActivity,
-  noteFallbackActivity,
   resetAudioMux,
 } from "./state.ts";
 import { stopAudioProcessing, stopMeetBot } from "./stop_meet_bot.ts";
@@ -72,37 +67,12 @@ let latestRubricReport:
 let wasSpeaking = false;
 let lastSpeechAt = Date.now();
 let rollingTranscript = "";
+let latestScreenshotPath: string | null = null;
 
 const recordingsDir = "./recordings";
 if (!fs.existsSync(recordingsDir)) {
   fs.mkdirSync(recordingsDir, { recursive: true });
 }
-
-let lastAssessAt = 0;
-const ASSESS_COOLDOWN_MS = 55_000;
-
-// Instagram rubric (what “good” looks like) — keep short & concrete
-const INSTAGRAM_REQUIREMENTS = `
-# Scenario: Design Instagram
-Functional:
-- Users post photos/videos with captions, follow, like, comment, notifications
-- Home feed: personalized, ranked, infinite scroll
-- Search/explore; user profiles; basic moderation
-
-Non-functional:
-- Tens of millions DAU, global; low latency home feed (<200ms P50 at edge)
-- High availability; eventual consistency OK for counts/timelines
-- Media heavy: upload, transcode, CDN
-
-Key areas expected:
-- Data model (users, posts, follows, likes, comments), indexes & hot keys
-- Media pipeline (upload, virus scan, transcode variants, metadata store, CDN)
-- Feed generation (push/pull, fanout/fanin, ranking features, pagination)
-- Caching (CDN, Redis timelines), invalidation strategy
-- Sharding/partitioning; backpressure; queues; idempotency; retries
-- Observability (metrics/traces/alerts) and degradation levers
-- AuthN/Z, privacy, abuse mitigation basics
-`.trim();
 
 let outboundPrimed = false;
 
@@ -227,31 +197,6 @@ export async function startMeetBot(
       console.error("❌ Unsupported meeting platform! Cannot proceed.");
       return { status: "error", message: "Unsupported meeting platform" };
     }
-
-    let latestScreenshotPath: string | null = null;
-    registerVisionProvider(async () => {
-      if (!latestScreenshotPath) {
-        console.log("[vision] provider: no screenshot yet");
-        return { state: "unknown", summary: "No screenshot yet." };
-      }
-
-      const res = await analyzeScreenshot(latestScreenshotPath);
-      const state =
-        res.whiteboard?.state ??
-        (/blank whiteboard|whiteboard.*blank/i.test(res.summary)
-          ? "blank"
-          : /whiteboard|miro|excalidraw|jamboard|figma|canvas/i.test(
-              res.summary
-            )
-          ? "has_content"
-          : /does not show a whiteboard|no whiteboard/i.test(res.summary)
-          ? "none"
-          : "unknown");
-
-      const reply = { state, summary: res.summary, app: res.whiteboard?.app };
-      console.log(`[vision] provider → ${JSON.stringify(reply)}`); // ← you should SEE this
-      return reply;
-    });
 
     registerAssessmentProvider(async () => {
       // Surface the worker’s latest rubric to the tool
@@ -689,6 +634,7 @@ export async function startMeetBot(
 
       console.log(`👀 Watching for new screenshots in ${absDir}`);
 
+      // Chockidar watches the filesystem for new screenshot images
       const watcher = chokidar.watch(absDir, {
         persistent: true,
         ignoreInitial: true,
@@ -717,24 +663,11 @@ export async function startMeetBot(
         }
         lastRun = now;
 
-        try {
-          const res = await analyzeScreenshot(filePath);
-          console.log(
-            `[vision] summary: ${res?.summary?.slice(0, 200) || "<empty>"}`
-          );
-          // → Forward whiteboard/diagram state to the control worker
-          postToWorker({
-            type: "VISION_UPDATE",
-            ts: Date.now(),
-            state: res?.whiteboard?.state ?? "unknown",
-            summary: res?.summary,
-            componentsCount: Array.isArray(res?.diagram?.components)
-              ? res!.diagram!.components.length
-              : 0,
-          });
-        } catch (e: any) {
-          console.error("[vision] analysis failed:", e?.message || e);
-        }
+        postToWorker({
+          type: "VISION_SNAPSHOT",
+          ts: Date.now(),
+          path: filePath,
+        });
       };
 
       watcher

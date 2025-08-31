@@ -3,7 +3,10 @@ import { parentPort } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { readFile } from "node:fs/promises";
-import * as path from "node:path";
+import {
+  analyzeWhiteboardFromImage,
+  type VisionState,
+} from "./vision.analyzer.ts";
 
 import OpenAI from "openai";
 import type {
@@ -26,7 +29,6 @@ let tickCount = 0;
 let transcriptLines = 0;
 let transcriptChars = 0;
 
-type VisionState = "none" | "blank" | "has_content" | "unknown";
 let lastVisionState: VisionState | null = null;
 let lastVisionComponents = 0;
 let lastVisionSummary: string | null = null;
@@ -53,6 +55,11 @@ const REEMIT_SUPPRESS_MS = 30_000;
 let goodBoardSamples: number[] = [];
 let lastRubric: RubricReport | null = null;
 
+async function fileToBase64(p: string): Promise<string> {
+  const buf = await readFile(p);
+  return buf.toString("base64");
+}
+
 function pruneOld(now = Date.now()) {
   goodBoardSamples = goodBoardSamples.filter((t) => now - t <= GATE_WINDOW_MS);
 }
@@ -60,6 +67,7 @@ function noteGoodBoard(ts = Date.now()) {
   goodBoardSamples.push(ts);
   pruneOld(ts);
 }
+
 function maybeAdvanceToInterview(now = Date.now()) {
   if (currentPhase === "interview") return;
   pruneOld(now);
@@ -309,6 +317,40 @@ function buildInactivityNudge(): string {
   return "Let's walk the media pipeline: upload → scan → transcode → store → CDN.";
 }
 
+function handleVisionUpdate(
+  evTs: number,
+  state: VisionState,
+  summary?: string | null,
+  componentsCount?: number
+) {
+  lastVisionState = state;
+  lastVisionComponents = componentsCount ?? 0;
+  lastVisionSummary = summary ?? null;
+
+  if (GOOD_STATES.has(state)) {
+    noteGoodBoard(evTs || Date.now());
+    maybeAdvanceToInterview();
+  } else {
+    pruneOld();
+    if (currentPhase === "whiteboard_gate") {
+      maybeOverlay(
+        "I’m not seeing a whiteboard yet—please share your screen with Miro/Excalidraw/Jamboard/Figma.",
+        "wb:nudge",
+        60_000
+      );
+    }
+  }
+
+  const sum = (summary ?? "").replace(/\s+/g, " ").slice(0, 160);
+  console.log(
+    `[control] VISION state=${state} comps=${lastVisionComponents} summary="${sum}${
+      (summary ?? "").length > 160 ? "…" : ""
+    }"`
+  );
+  lastActivityAt = Date.now();
+  inactivityStage = 0;
+}
+
 // ---------- hello overlay ----------
 parentPort.postMessage({
   type: "SET_OVERLAY",
@@ -423,41 +465,31 @@ parentPort.on("message", (ev: ControlEvent) => {
           );
         }
       }
-
       break;
     }
 
     case "VISION_UPDATE": {
-      lastVisionState = ev.state;
-      lastVisionComponents = ev.componentsCount ?? 0;
-      lastVisionSummary = ev.summary ?? null;
+      handleVisionUpdate(ev.ts, ev.state, ev.summary, ev.componentsCount);
+      break;
+    }
 
-      if (GOOD_STATES.has(ev.state)) {
-        noteGoodBoard(ev.ts ?? Date.now());
-        // Existing: will call maybeAdvanceToInterview() → SET_PHASE("interview")
-        maybeAdvanceToInterview();
-      } else {
-        pruneOld();
-        // NEW: nudge only during whiteboard_gate
-        if (currentPhase === "whiteboard_gate") {
-          maybeOverlay(
-            "I’m not seeing a whiteboard yet—please share your screen with Miro/Excalidraw/Jamboard/Figma.",
-            "wb:nudge",
-            60_000
+    case "VISION_SNAPSHOT": {
+      (async () => {
+        try {
+          const r = await analyzeWhiteboardFromImage(ev.path, {
+            client: openai,
+            model: process.env.VISION_MODEL,
+          });
+          handleVisionUpdate(ev.ts, r.state, r.summary, r.componentsCount);
+        } catch (e: any) {
+          console.warn(
+            "[control] VISION_SNAPSHOT analysis failed:",
+            e?.message || e
           );
+          lastActivityAt = Date.now();
+          inactivityStage = 0;
         }
-      }
-
-      const sum = (ev.summary ?? "").replace(/\s+/g, " ").slice(0, 160);
-      console.log(
-        `[control] VISION state=${
-          ev.state
-        } comps=${lastVisionComponents} summary="${sum}${
-          (ev.summary ?? "").length > 160 ? "…" : ""
-        }"`
-      );
-      lastActivityAt = Date.now();
-      inactivityStage = 0;
+      })();
       break;
     }
 

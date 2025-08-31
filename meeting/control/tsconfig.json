@@ -6,7 +6,9 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true
   },
   "include": ["**/*.ts"]
 }
