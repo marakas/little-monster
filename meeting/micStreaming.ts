@@ -1,4 +1,4 @@
-// micStreaming.ts — revert to the choppy-but-working ScriptProcessor path
+// micStreaming.ts — fake mic to play back to the meeting from open ai
 // - 48k internal graph
 // - supports enqueuePcmAt(rate, Int16[])
 // - no preroll / minimal buffering (this is why it’s choppy, but it *will* output)

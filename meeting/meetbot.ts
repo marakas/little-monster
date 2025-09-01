@@ -4,7 +4,6 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import * as path from "node:path";
-import { PassThrough } from "node:stream";
 import * as os from "node:os";
 
 import {
@@ -15,11 +14,9 @@ import chokidar from "chokidar";
 
 import {
   initRealtime,
-  isAgentSpeaking,
   onRealtimeAudio,
-  sendRealtimeAudio,
   setRealtimeArmed,
-  commitNow,
+  clearInputBuffer,
 } from "./realtimeClient.ts";
 
 import { audioCapture } from "./audioCapture.ts";
@@ -32,20 +29,12 @@ import {
   onRealtimeEvent,
 } from "./realtimeClient.ts";
 
-import ffmpeg from "fluent-ffmpeg";
 import { launch } from "puppeteer-stream";
 
-import {
-  MEET_BOT_MAX_DURATION,
-  ENABLE_FULL_AUDIO_ACCUMULATION,
-} from "./constants.ts";
+import { MEET_BOT_MAX_DURATION } from "./constants.ts";
 import { env } from "./env.ts";
-import state, {
-  waitUntilJoined,
-  notePrimaryActivity,
-  resetAudioMux,
-} from "./state.ts";
-import { stopAudioProcessing, stopMeetBot } from "./stop_meet_bot.ts";
+import state, { waitUntilJoined, resetAudioMux } from "./state.ts";
+import { stopMeetBot } from "./stop_meet_bot.ts";
 import {
   delay,
   monitorKickout,
@@ -64,8 +53,6 @@ let latestRubricReport:
   | import("./control/control.schema.js").RubricReport
   | null = null;
 
-let wasSpeaking = false;
-let lastSpeechAt = Date.now();
 let rollingTranscript = "";
 let latestScreenshotPath: string | null = null;
 
@@ -128,35 +115,6 @@ function chunkHasVoice16k(ab: ArrayBuffer): boolean {
   }
   const rms = Math.sqrt(sum / Math.max(1, n)); // 0..32767
   return rms > 200; // tweak 120–300 if needed
-}
-
-// ✅ **Enhanced Audio Processing with Real-time Speech Detection**
-function startAudioProcessing() {
-  if (state.audioProcessingInterval) {
-    console.log("⚠️ Audio processing is already running.");
-    return;
-  }
-
-  console.log("🎤 Starting enhanced audio processing...");
-
-  // Balanced monitoring with buffer management
-  state.audioProcessingInterval = setInterval(() => {
-    if (!state.isBotRunning) {
-      console.log(
-        "🛑 Bot stopped but interval still running. Clearing it now."
-      );
-      stopAudioProcessing();
-      return;
-    }
-    if (isAgentSpeaking()) return; // don't force-commit during TTS
-    const silentForMs = Date.now() - lastSpeechAt;
-    if (wasSpeaking && silentForMs > 650) {
-      wasSpeaking = false;
-      commitNow();
-    }
-  }, 200);
-
-  console.log("✅ Enhanced audio processing started with buffer management");
 }
 
 // ✅ **Start Meet Bot**
@@ -224,23 +182,6 @@ export async function startMeetBot(
     if (state.muxWatchdog) {
       clearInterval(state.muxWatchdog);
       state.muxWatchdog = null;
-    }
-
-    // 🧪 Initialize experimental audio accumulation mode
-    if (ENABLE_FULL_AUDIO_ACCUMULATION) {
-      console.log("Full audio accumulation mode enabled");
-      state.isFullAccumulationMode = true;
-      state.fullAudioAccumulator = Buffer.alloc(0);
-      state.meetingSpeakers.clear(); // Reset speakers for new meeting
-      state.speakerHistory = []; // Reset speaker history for new meeting
-      state.currentAudioOffsetMs = 0; // Reset audio offset
-      state.lastSpeakerUpdate = Date.now(); // Initialize last update time
-
-      // 🤖 Initialize AI merging arrays
-      state.chunkedTranscriptions = [];
-      state.fullAudioTranscriptions = [];
-    } else {
-      state.isFullAccumulationMode = false;
     }
 
     await initRealtime(process.env.OPENAI_API_KEY!);
@@ -331,7 +272,6 @@ export async function startMeetBot(
     });
 
     // Start enhanced audio processing
-    startAudioProcessing();
     state.isClosing = false; // reset to false if previous session was running
 
     // ✅ Create session directory based on meeting_id
@@ -358,11 +298,7 @@ export async function startMeetBot(
     state.transcriptionLog = []; // Reset for new session
 
     console.log(`📂 Created session directory: ${state.sessionDir}`);
-    console.log(
-      `${env.RECORD_VIDEO ? "🎥 Video" : "🎙️ Audio"} will be saved at: ${
-        state.currentRecordingPath
-      }`
-    );
+
     console.log(
       `📝 AI-Enhanced Final Transcription: ${state.transcriptionLogPath}`
     );
@@ -516,77 +452,6 @@ export async function startMeetBot(
     console.log("⏳ Waiting for browser to be fully initialized...");
     await delay(2000);
 
-    console.log("🎥 Starting recording...");
-
-    const file = fs.createWriteStream(state.currentRecordingPath);
-
-    const audioStream = new PassThrough();
-
-    const audioSampleRate = 16000;
-    console.log(
-      `🎵 Using ${audioSampleRate} Hz sample rate for ${meetingPlatform} platform`
-    );
-
-    state.activeProcess = ffmpeg()
-      .input(audioStream)
-      .inputFormat("webm")
-      .audioCodec("pcm_s16le")
-      .audioFrequency(16000) // Realtime API expects 16k in
-      .audioChannels(1)
-      .format("s16le") // <-- RAW PCM, not WAV
-      .on("error", (err) => {
-        console.error("FFmpeg Error:", err);
-        // demote primary on error; fallback will claim on next activity
-        if (state.audioMux.active === "primary") state.audioMux.active = "none";
-      });
-
-    const toRealtime = new PassThrough();
-    state.activeProcess.pipe(toRealtime).on("data", (chunk: Buffer) => {
-      notePrimaryActivity();
-      if (state.audioMux.active !== "primary") return;
-      const ab = new Uint8Array(chunk).buffer;
-      const humanVoiced = chunkHasVoice16k(ab);
-      if (humanVoiced && !isAgentSpeaking()) {
-        console.log("startMeetBot :  state.activeProcess.pipe");
-        sendRealtimeAudio(ab, 16000);
-        wasSpeaking = true;
-        lastSpeechAt = Date.now();
-      }
-    });
-
-    // Demote when FFmpeg ends/closes
-    (state.activeProcess as any)
-      .on?.("end", () => {
-        if (state.audioMux.active === "primary") state.audioMux.active = "none";
-      })
-      .on?.("close", () => {
-        if (state.audioMux.active === "primary") state.audioMux.active = "none";
-      });
-
-    state.activeStream = new PassThrough();
-    state.activeStream.pipe(file);
-    state.activeStream.pipe(audioStream);
-
-    // Watch for stale sources and free the lane
-    const PRIMARY_STALE_MS = 2000;
-    const FALLBACK_STALE_MS = 2000;
-    if (state.muxWatchdog) clearInterval(state.muxWatchdog);
-    state.muxWatchdog = setInterval(() => {
-      const now = Date.now();
-      const primaryStale =
-        now - state.audioMux.lastPrimaryAt > PRIMARY_STALE_MS;
-      const fallbackStale =
-        now - state.audioMux.lastFallbackAt > FALLBACK_STALE_MS;
-
-      if (state.audioMux.active === "primary" && primaryStale) {
-        state.audioMux.active = "none";
-      }
-      if (state.audioMux.active === "fallback" && fallbackStale) {
-        state.audioMux.active = "none";
-      }
-    }, 500);
-    await delay();
-
     const context = state.activeBrowser.defaultBrowserContext();
 
     // ✅ **Grant Permissions for WebRTC & Media** (enhanced from your working code)
@@ -706,6 +571,28 @@ export async function startMeetBot(
     await waitForOutboundReady();
 
     setRealtimeArmed(true); // now safe to allow auto turns
+    clearInputBuffer(); // first clear (pre-greeting)
+    let greetingPending = true;
+
+    // Hook into the existing session event stream you already subscribed to
+    onRealtimeEvent((ev: any) => {
+      // when the manual greeting finishes, arm auto-turns
+      if (
+        greetingPending &&
+        (ev.type === "response.completed" ||
+          ev.type === "response.failed" ||
+          ev.type === "response.canceled")
+      ) {
+        greetingPending = false;
+
+        // Double-clear: drop anything buffered during TTS playback
+        clearInputBuffer();
+        clearInputBuffer();
+
+        // NOW let the SDK manage turns and barge-in
+        setRealtimeArmed(true);
+      }
+    });
     await startPhasedInterview(); // this calls speakOnce(...) for the greeting
 
     // ✅ **Auto-stop the bot after the maximum duration**

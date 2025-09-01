@@ -9,11 +9,6 @@ import { runCleanup } from "./cleanup.ts";
 import { completeMeeting } from "./dynamo.ts";
 import { env } from "./env.ts";
 import state from "./state.ts";
-import {
-  sendToWhisper,
-  processFullAccumulatedAudio,
-  cleanupTranscriptionHallucinations,
-} from "./whisper.ts";
 
 // Initialize AWS S3
 const s3 = new AWS.S3({
@@ -84,34 +79,8 @@ export async function stopMeetBot(reason = "manual") {
     console.log("⏹️ Calling stopAudioProcessing...");
     stopAudioProcessing();
 
-    // ✅ Process accumulated audio if in full accumulation mode
-    if (state.isFullAccumulationMode && state.fullAudioAccumulator.length > 0) {
-      console.log("🧪 Processing full accumulated audio before exit...");
-      await processFullAccumulatedAudio();
-    } else if (state.audioBuffer.length > 0) {
-      // ✅ Ensure the last audio chunk is sent to Whisper **before finalizing** (standard mode)
-      console.log("🚀 Sending final audio chunk to Whisper before exit...");
-      // Pass 16000 Hz as default for final processing
-      //await sendToWhisper(state.audioBuffer, 0, false, 16000);
-      state.audioBuffer = Buffer.alloc(0);
-    }
-
     // ✅ Mark as finalizing **after sending the last chunk**
     state.isFinalizing = true;
-
-    // ✅ Wait for all pending Whisper transcriptions to complete
-    console.log(
-      `⏳ Waiting for pending transcriptions (${state.pendingTranscriptions})...`
-    );
-    while (state.pendingTranscriptions > 0) {
-      await delay(1000);
-    }
-    console.log("✅ All Whisper transcriptions completed.");
-
-    // 🧹 Clean up transcription hallucinations and repetitions
-    if (state.transcriptionLog.length > 0) {
-      await cleanupTranscriptionHallucinations();
-    }
 
     // Clear active speaker
     state.currentSpeaker = "User";

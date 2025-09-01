@@ -1,22 +1,22 @@
-import 'dotenv/config'
+import "dotenv/config";
 
-import * as z from 'zod'
+import * as z from "zod";
 
 const EnvSchema = z.object({
   NODE_ENV: z
-    .enum(['development', 'staging', 'production'])
-    .default('development'),
+    .enum(["development", "staging", "production"])
+    .default("development"),
   // https://github.com/colinhacks/zod/issues/4103
   AMQP_URL: z.string().refine((val) => {
     try {
-      new URL(val)
-      return true
+      new URL(val);
+      return true;
     } catch {
-      return false
+      return false;
     }
   }),
 
-  AWS_REGION: z.string().default('ap-northeast-1'),
+  AWS_REGION: z.string().default("ap-northeast-1"),
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
   DYNAMODB_ENDPOINT: z.string().optional(),
@@ -31,11 +31,10 @@ const EnvSchema = z.object({
   OPENAI_API_KEY: z.string().min(1),
   PUPPETEER_EXECUTABLE_PATH: z.string().min(1),
   RECORD_VIDEO: z.stringbool().default(true),
-  ENABLE_FULL_AUDIO_ACCUMULATION: z.stringbool().default(false),
-})
+});
 
-export const env = EnvSchema.parse(process.env)
+export const env = EnvSchema.parse(process.env);
 
-if (env.NODE_ENV === 'development') {
-  console.log(env)
+if (env.NODE_ENV === "development") {
+  console.log(env);
 }

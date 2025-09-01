@@ -1,10 +1,6 @@
 import assert from "node:assert";
 
-import {
-  BOT_ID,
-  SILENCE_THRESHOLD,
-  ENABLE_FULL_AUDIO_ACCUMULATION,
-} from "./constants.ts";
+import { BOT_ID, SILENCE_THRESHOLD } from "./constants.ts";
 import state, { type Page, setHasJoined } from "./state.ts";
 import { stopMeetBot } from "./stop_meet_bot.ts";
 
@@ -105,106 +101,6 @@ export function batchAudioChunk(chunk: Uint8Array, sampleRate: number = 16000) {
 
   if (speakerChanged && previousSpeaker) {
     console.log(`🔄 Speaker changed: ${previousSpeaker} → ${currentSpeaker}`);
-  }
-
-  // Full Audio Accumulation Mode (alongside normal chunking)
-  if (ENABLE_FULL_AUDIO_ACCUMULATION && state.isFullAccumulationMode) {
-    const now = Date.now();
-
-    // Update audio offset based on new audio chunk
-    const chunkDurationMs = (audioBuffer.length / 2 / sampleRate) * 1000; // Convert bytes to ms using dynamic sample rate
-
-    // 🚨 Memory safety check: Prevent accumulator from growing too large
-    const memorySafetyLimit = 100 * 1024 * 1024; // 100MB safety limit
-    const criticalMemoryLimit = 200 * 1024 * 1024; // 200MB critical limit
-
-    if (state.fullAudioAccumulator.length > criticalMemoryLimit) {
-      console.log(
-        `🚨 CRITICAL: Audio accumulator exceeds ${Math.round(
-          criticalMemoryLimit / 1024 / 1024
-        )}MB, emergency reset to prevent OOM...`
-      );
-      // Emergency reset to prevent OOM - sacrifice accumulated audio to save the process
-      const resetSizeMB = Math.round(
-        state.fullAudioAccumulator.length / 1024 / 1024
-      );
-      state.fullAudioAccumulator = Buffer.alloc(0);
-      state.currentAudioOffsetMs = 0;
-      state.speakerHistory = [];
-
-      // Force garbage collection if available
-      if (global.gc) {
-        console.log("🗑️ Emergency garbage collection triggered");
-        global.gc();
-      }
-
-      console.log(
-        `🚨 Emergency reset completed - ${resetSizeMB}MB buffer cleared`
-      );
-    } else if (state.fullAudioAccumulator.length > memorySafetyLimit) {
-      // Warning but continue accumulating
-      const currentSizeMB = Math.round(
-        state.fullAudioAccumulator.length / 1024 / 1024
-      );
-      console.log(
-        `⚠️ Audio accumulator size warning: ${currentSizeMB}MB (approaching limit)`
-      );
-    }
-
-    // Accumulate all audio for end-of-meeting processing
-    state.fullAudioAccumulator = Buffer.concat([
-      state.fullAudioAccumulator,
-      audioBuffer,
-    ]);
-
-    // Track speakers who participate in the meeting
-    if (
-      currentSpeaker &&
-      currentSpeaker !== "Unknown" &&
-      currentSpeaker !== "User"
-    ) {
-      state.meetingSpeakers.add(currentSpeaker);
-    }
-
-    // Record speaker at regular intervals (every 2 seconds) or on speaker changes
-    const shouldRecordSpeaker =
-      now - state.lastSpeakerUpdate > 2000 || // Every 2 seconds
-      speakerChanged || // On speaker change
-      state.speakerHistory.length === 0; // First recording
-
-    if (shouldRecordSpeaker && currentSpeaker) {
-      state.speakerHistory.push({
-        speaker: currentSpeaker,
-        audioOffsetMs: state.currentAudioOffsetMs,
-      });
-      state.lastSpeakerUpdate = now;
-
-      if (speakerChanged) {
-        console.log(
-          `🎤 Speaker at ${Math.round(
-            state.currentAudioOffsetMs / 1000
-          )}s: ${currentSpeaker}`
-        );
-      }
-    }
-
-    // Update current audio position
-    state.currentAudioOffsetMs += chunkDurationMs;
-
-    // Periodic logging to show accumulation progress
-    if (Math.random() < 0.001) {
-      // ~0.1% chance to log stats
-      const totalDurationMs = state.currentAudioOffsetMs;
-      const totalSizeMB =
-        Math.round((state.fullAudioAccumulator.length / 1024 / 1024) * 100) /
-        100;
-      const speakerList = Array.from(state.meetingSpeakers).join(", ");
-      console.log(
-        `🎙️ Audio accumulation: ${Math.round(
-          totalDurationMs / 1000
-        )}s (${totalSizeMB}MB) buffered | Speakers: ${speakerList}`
-      );
-    }
   }
 
   // Update previous speaker

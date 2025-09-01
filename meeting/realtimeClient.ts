@@ -23,6 +23,10 @@ let agentSpeaking = false;
 let _interviewStarted = false;
 let realtimeArmed = false;
 
+export function isRealtimeArmed() {
+  return realtimeArmed;
+}
+
 // -----------------------------
 // Phase plumbing (inside agent)
 // -----------------------------
@@ -45,9 +49,9 @@ export function setRealtimeArmed(on: boolean) {
     type: "session.update",
     session: {
       turn_detection: {
-        type: "semantic_vad", // keep a valid type
+        type: "semantic_vad",
         eagerness: "medium",
-        create_response: on, // disarm by setting false
+        create_response: on,
         interrupt_response: true,
       },
     },
@@ -57,6 +61,11 @@ export function setRealtimeArmed(on: boolean) {
       ? "[prompt] Realtime ARMED (create_response=true)"
       : "[prompt] Realtime DISARMED (create_response=false)"
   );
+}
+
+// Helper to flush any queued input frames on the server
+export function clearInputBuffer() {
+  wsSession.transport.sendEvent({ type: "input_audio_buffer.clear" });
 }
 
 export type LiveAssessmentReply = {
@@ -356,6 +365,7 @@ function resetCommitBudget() {
 }
 
 export function commitNow() {
+  if (!realtimeArmed) return;
   if (isAgentSpeaking()) return;
   if (!canCommit()) return;
   console.log("commitNow");
