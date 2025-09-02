@@ -23,6 +23,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const RUBRIC_PATH = resolve(__dirname, "rubric.instagram.json");
+const ENABLE_RUBRIC = false;
 
 // ---------- minimal state ----------
 let tickCount = 0;
@@ -79,27 +80,22 @@ function maybeAdvanceToInterview(now = Date.now()) {
 
   currentPhase = "interview";
   lastPhaseEmitAt = now;
+  console.log(
+    "[worker]SET_PHASE, Whiteboard stabilized as blank/has_content (twice, spaced)."
+  );
   parentPort!.postMessage({
     type: "SET_PHASE",
     phase: "interview",
     reason: "Whiteboard stabilized as blank/has_content (twice, spaced).",
   });
-
+  console.log("[worker]SET_OVERLAY, Please draw a triangle on the screen.");
   // NEW: make the interviewer lead with a clear plan
   parentPort!.postMessage({
     type: "SET_OVERLAY",
-    text: [
-      "Agenda: constraints → data model → media pipeline → feed → caching/scale → observability/safety.",
-      "I will lead and timebox each part. Start by confirming baseline assumptions, then give a concise data model.",
-    ].join(" "),
+    text: ["Please draw a triangle on the screen."].join(" "),
     ttlMs: 90_000,
   });
 
-  console.log(
-    `[control] PHASE → interview (samples=${
-      goodBoardSamples.length
-    }, sep=${Math.round((last - first) / 1000)}s)`
-  );
   goodBoardSamples = [];
 }
 
@@ -129,6 +125,10 @@ const ASSESS_MAX_MS = 90_000;
 let nextAssessAt = 0;
 
 function scheduleNextAssessment() {
+  if (!ENABLE_RUBRIC) {
+    nextAssessAt = Number.MAX_SAFE_INTEGER;
+    return;
+  }
   const jitter =
     ASSESS_MIN_MS + Math.floor(Math.random() * (ASSESS_MAX_MS - ASSESS_MIN_MS));
   nextAssessAt = Date.now() + jitter;
@@ -149,7 +149,7 @@ function maybeOverlay(text: string, key: string, ttlMs = 120_000) {
 
   lastOverlayKey = k;
   lastOverlayAt = now;
-
+  console.log("[worker] SET_OVERLAY & TEXT");
   parentPort!.postMessage({
     type: "SET_OVERLAY",
     text,
@@ -198,6 +198,8 @@ function toRubricReport(obj: any): RubricReport {
 }
 
 async function runRubricAssessment(): Promise<void> {
+  if (!ENABLE_RUBRIC) return;
+
   // require some signal; skip if totally cold
   if (transcriptChars < 60) return;
 
@@ -249,12 +251,13 @@ Produce a JSON object with:
     const parsed = JSON.parse(jsonText);
     const report = toRubricReport(parsed);
     lastRubric = report;
+    console.log("[worker] RUBRIC_UPDATE");
     parentPort!.postMessage({ type: "RUBRIC_UPDATE", report } as ControlAction);
     // Emit a compact overlay using the top gap (if any)
     maybeOverlayFromGap(report.top_gaps?.[0]);
   } catch (e: any) {
     console.warn(
-      "[control] rubric assessment failed:",
+      "[worker][control] rubric assessment failed:",
       e?.message || e,
       "\nraw:",
       jsonText.slice(0, 300)
@@ -286,35 +289,22 @@ async function emitFinalReport(reason?: string) {
       updated_at: Date.now(),
       suggested_next_question: undefined,
     };
-
+    console.log("END_REPORT");
     parentPort!.postMessage({ type: "END_REPORT", report });
     console.log(
-      `[control] END_REPORT sent${reason ? ` (reason=${reason})` : ""}`
+      `[worker][control] END_REPORT sent${reason ? ` (reason=${reason})` : ""}`
     );
   } catch (e: any) {
-    console.warn("[control] emitFinalReport failed:", e?.message || e);
+    console.warn("[worker][control] emitFinalReport failed:", e?.message || e);
   }
 }
 
 function buildInactivityNudge(): string {
-  // If we aren't in interview yet, guide them to share a board
   if (currentPhase !== "interview") {
-    return "Please share your screen and open a whiteboard (Miro/Excalidraw/Jamboard/Figma) so we can start sketching.";
+    return "Please share your whiteboard (Miro/Excalidraw/Jamboard/Figma).";
   }
-
-  // Prefer the top gap from the latest rubric if available
-  const gap = lastRubric?.top_gaps?.[0];
-  if (gap) {
-    return `Let's tackle this next: ${gap}.`;
-  }
-
-  // If vision says no/unknown board, steer to draw
-  if (lastVisionState === "none" || lastVisionState === "unknown") {
-    return "Let's bring up a whiteboard and sketch the high-level services and data flows.";
-  }
-
-  // Safe default concrete prompt
-  return "Let's walk the media pipeline: upload → scan → transcode → store → CDN.";
+  // interview phase default nudge:
+  return "Please draw a triangle on the screen. Any simple triangle is fine.";
 }
 
 function handleVisionUpdate(
@@ -333,6 +323,9 @@ function handleVisionUpdate(
   } else {
     pruneOld();
     if (currentPhase === "whiteboard_gate") {
+      console.log(
+        "[worker] maybe overlay :I’m not seeing a whiteboard yet—please share your screen with Miro/Excalidraw/Jamboard/Figma. "
+      );
       maybeOverlay(
         "I’m not seeing a whiteboard yet—please share your screen with Miro/Excalidraw/Jamboard/Figma.",
         "wb:nudge",
@@ -343,7 +336,7 @@ function handleVisionUpdate(
 
   const sum = (summary ?? "").replace(/\s+/g, " ").slice(0, 160);
   console.log(
-    `[control] VISION state=${state} comps=${lastVisionComponents} summary="${sum}${
+    `[worker][control] VISION state=${state} comps=${lastVisionComponents} summary="${sum}${
       (summary ?? "").length > 160 ? "…" : ""
     }"`
   );
@@ -354,7 +347,7 @@ function handleVisionUpdate(
 // ---------- hello overlay ----------
 parentPort.postMessage({
   type: "SET_OVERLAY",
-  text: "👋 Control Worker online. Overlays are live.",
+  text: "👋 Triangle test online. Please share your whiteboard when ready.",
   ttlMs: 30_000,
 });
 
@@ -373,13 +366,15 @@ parentPort.on("message", (ev: ControlEvent) => {
       currentPhase = "intro";
       lastPhaseEmitAt = 0;
       goodBoardSamples = [];
+      console.log(
+        "[worker] SET_OVERLAY, Welcome to the test interview. Please share your whiteboard.."
+      );
       parentPort!.postMessage({
         type: "SET_OVERLAY",
-        text: "Start with the ground rules, invite questions, then wait for whiteboard.",
+        text: "Welcome to the test interview. Please share your whiteboard.",
         ttlMs: 45_000,
       });
       scheduleNextAssessment();
-      console.log(`[control] HELLO meetingId=${ev.meetingId ?? "<none>"}`);
       break;
     }
 
@@ -399,7 +394,7 @@ parentPort.on("message", (ev: ControlEvent) => {
         maybeOverlay(text, `inactivity:8:${currentPhase}`, 180_000); // longer TTL on escalation
         inactivityStage = 8;
         console.log(
-          `[control] INACTIVITY escalation overlay after ${Math.round(
+          `[worker][control] INACTIVITY escalation overlay after ${Math.round(
             idleFor / 1000
           )}s`
         );
@@ -408,7 +403,7 @@ parentPort.on("message", (ev: ControlEvent) => {
         maybeOverlay(text, `inactivity:5:${currentPhase}`, 120_000);
         inactivityStage = 5;
         console.log(
-          `[control] INACTIVITY warning overlay after ${Math.round(
+          `[worker][control] INACTIVITY warning overlay after ${Math.round(
             idleFor / 1000
           )}s`
         );
@@ -416,7 +411,7 @@ parentPort.on("message", (ev: ControlEvent) => {
 
       if (tickCount % 12 === 0) {
         console.log(
-          `[control] TICK x${tickCount} | vision=${
+          `[worker][control] TICK x${tickCount} | vision=${
             lastVisionState ?? "n/a"
           } comps=${lastVisionComponents} | lines=${transcriptLines} chars=${transcriptChars}`
         );
@@ -431,7 +426,7 @@ parentPort.on("message", (ev: ControlEvent) => {
 
       const preview = ev.text.replace(/\s+/g, " ").slice(0, 120);
       console.log(
-        `[control] TRANSCRIPT line#${transcriptLines} (+${
+        `[worker][control] TRANSCRIPT line#${transcriptLines} (+${
           ev.text.length
         } chars): "${preview}${ev.text.length > 120 ? "…" : ""}"`
       );
@@ -453,11 +448,17 @@ parentPort.on("message", (ev: ControlEvent) => {
         ) {
           currentPhase = "whiteboard_gate";
           lastPhaseEmitAt = Date.now();
+          console.log(
+            "[worker]SET_PHASE,whiteboard_gate, Intro acknowledged; prompting to share whiteboard."
+          );
           parentPort!.postMessage({
             type: "SET_PHASE",
             phase: "whiteboard_gate",
             reason: "Intro acknowledged; prompting to share whiteboard.",
           });
+          console.log(
+            "[worker]maybeOverlay, Please share your screen and open a whiteboard (Miro/Excalidraw/Jamboard/Figma)."
+          );
           maybeOverlay(
             "Please share your screen and open a whiteboard (Miro/Excalidraw/Jamboard/Figma).",
             "wb:prompt",
@@ -483,7 +484,7 @@ parentPort.on("message", (ev: ControlEvent) => {
           handleVisionUpdate(ev.ts, r.state, r.summary, r.componentsCount);
         } catch (e: any) {
           console.warn(
-            "[control] VISION_SNAPSHOT analysis failed:",
+            "[worker][control] VISION_SNAPSHOT analysis failed:",
             e?.message || e
           );
           lastActivityAt = Date.now();

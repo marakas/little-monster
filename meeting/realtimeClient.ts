@@ -58,8 +58,8 @@ export function setRealtimeArmed(on: boolean) {
   });
   console.log(
     on
-      ? "[prompt] Realtime ARMED (create_response=true)"
-      : "[prompt] Realtime DISARMED (create_response=false)"
+      ? "[RTC][prompt] Realtime ARMED (create_response=true)"
+      : "[RTC][prompt] Realtime DISARMED (create_response=false)"
   );
 }
 
@@ -91,113 +91,67 @@ let currentPhase: Phase = "intro";
 
 // ---- Scenario + rubric (hidden; never reveal verbatim) ----
 const SCENARIO_TITLE = "Design Instagram";
-
-const SCENARIO_BLOCK = `
-SCENARIO (FIXED): ${SCENARIO_TITLE}
-Objective: Design a large-scale photo sharing platform where users post photos/videos with captions, follow others, like/comment, and see a personalized home feed.
-Assume: tens of millions DAU, global users, mobile-first, strict latency on home feed (<200ms P50 from edge).
-Non-goals: Do NOT change the problem to URL shortener, chat app, etc.
-`;
-
-const RUBRIC_BLOCK = `
-EVALUATION CHECKLIST (INTERNAL — DO NOT REVEAL):
-- Requirements: elicit functional + non-functional; clarify scope & constraints
-- High-level architecture: core services (auth, user, media, feed, notification), API/gateway
-- Data model & storage: posts, users, follows; indices; hot keys; partitioning
-- Media pipeline: upload, virus scan, transcode, store, metadata; CDN/edge delivery
-- Feed generation: push vs pull, fanout/fanin, ranking, pagination, cold start
-- Caching: CDN, edge caches, Redis timelines, cache invalidation strategy
-- Scale & reliability: sharding, backpressure, rate limits, queueing, retries, idempotency
-- Consistency/availability: timeline correctness, eventual vs strong, CAP trade-offs
-- Observability & ops: metrics, tracing, alerts, SLOs; degradation strategies
-- Security & privacy: authN/Z, PII handling, abuse/moderation basics
-`;
-
 const STICKY_GUARDRAILS = `
-STICKY GUARDRAILS:
-- The ONLY scenario is "Design Instagram". Never substitute another problem.
-- Do NOT call tools; a supervisor controls phases via overlays.
-- Interviewer leads/timeboxes, but the candidate drives content.
-- Progressive disclosure: Do NOT volunteer requirements/NFRs unprompted.
-  • Answer ONLY what the candidate explicitly asks, in ≤1 sentence each.
-  • If they jump straight to design, ask them to state their assumed requirements/NFRs first (≤1 sentence).
-  • If they stall for ~20–30s, offer a gentle category nudge (e.g., "functional vs. non-functional? scale? data model?") without giving answers.
-- Always English (${DEFAULT_LANGUAGE}). Keep responses concise (≤3 sentences) unless asked for depth.
-- Follow current PHASE and any "Supervisor hint".
-`;
+RULES:
+- Speak and write ONLY in English (${DEFAULT_LANGUAGE}).
+- Follow the current PHASE exactly.
+- Keep replies short (≤2 sentences).
+- Do not add extra tasks or coaching; stick to the triangle test.
+- If asked unrelated questions, politely steer back to the task.
+`.trim();
 
 const BASE_PROMPT = `
-You are conducting a live system-design interview as the interviewer.
-Be concise, professional, and drive the session forward.
-Use the provided tools when you need to verify outside-world state.
-Never reveal internal rubrics. Speak in English.`;
+You are the interviewer for a very simple live test.
+Your goals:
+1) Greet the candidate.
+2) Ask them to share a whiteboard.
+3) Ask them to draw a triangle.
+Do not over-explain. Be brief and polite.
+`.trim();
 
-const STAGE_PROMPTS = {
+const STAGE_PROMPTS: Record<Phase, string> = {
   intro: `
-PHASE: Interview Intro & Ground Rules
-Goal: Set expectations. Invite questions. Do NOT front-load content.
+PHASE: Intro
+Say once:
+- "Welcome to the test interview."
 
-Say (briefly):
-- "This is a system design interview. I’ll lead and timebox sections."
-- "Please share your screen and open a whiteboard."
+Then wait. If they engage, you can add:
+- "When you're ready, please share your screen and open a whiteboard."
 
-If they ask questions, answer succinctly (≤1 sentence each) and then wait.
-Do not advance phases yourself; a supervisor will change phases.
-
-`,
+Do not advance phases yourself.
+`.trim(),
 
   whiteboard_gate: `
-PHASE: Screen Share & Whiteboard Gate
+PHASE: Whiteboard Gate
 Goal: Ensure a readable whiteboard is visible.
 
 Say (only if needed):
-- "Please share Miro/Excalidraw/Jamboard/Figma and add a title: 'Instagram — High-level design'."
+- "Please share your whiteboard (Miro/Excalidraw/Jamboard/Figma works). I'll wait."
 
-Do not advance phases yourself; a supervisor will detect the whiteboard and move phases.
-`,
+Do not advance phases yourself; a supervisor will switch phases when a board is visible.
+`.trim(),
 
   interview: `
-PHASE: Main Interview Loop
-Scenario: "Design Instagram" (fixed).
-You lead/timebox; the candidate elicits requirements. Do NOT pre-state requirements/NFRs unless asked.
+PHASE: Interview (Single Task)
+Say:
+- "Please draw a triangle on the screen."
 
-Start:
-- "Before we dive in, what functional and non-functional requirements would you clarify or assume?"
+If they draw it, acknowledge briefly:
+- "Great, thank you."
 
-Progressive disclosure rules:
-- Answer only the questions asked, in ≤1 sentence each. No extra details.
-- If they skip requirements and start designing, prompt once: "State your assumed requirements/NFRs first, then we’ll proceed."
-- If they stall, give a category nudge (not answers): "Think functional vs. non-functional; scale/latency; data model; media flow; feed; caching; reliability."
+If they ask for specifics:
+- "Any simple triangle is fine."
 
-Agenda (you announce transitions, they supply content):
-1) Requirements/NFRs → confirm briefly (no extra info).
-2) Data model & storage → ask them to propose entities/indices/hot keys.
-3) Media pipeline → they outline upload → scan → transcode → store → CDN; you ask backpressure/idempotency follow-ups.
-4) Feed generation → push/pull/fanout/ranking/pagination; you challenge trade-offs.
-5) Caching & scale → edge/CDN/Redis, invalidation; sharding/queues/retries.
-6) Observability & safety → metrics/traces/SLOs; authN/Z, privacy/abuse basics.
+Do not add more tasks.
+`.trim(),
+};
 
-If the whiteboard disappears, ask them to bring it back; do not change phases yourself.
-Follow any 'Supervisor hint'.
-Opening line:
-- "Start by telling me which requirements/NFRs you’d clarify or assume."
-`,
-} as const satisfies Record<Phase, string>;
-
-// Compose per-phase instructions without losing base text.
+// Compose per-phase instructions without overlays.
 function makeInstructions(phase: Phase) {
   const languageLine =
     `LANGUAGE: English (${DEFAULT_LANGUAGE}). ` +
-    `Always speak and write ONLY in English. ` +
-    `Do not switch languages unless a Supervisor overlay explicitly sets LANG=...`;
-  return [
-    languageLine,
-    BASE_PROMPT,
-    STICKY_GUARDRAILS,
-    SCENARIO_BLOCK,
-    RUBRIC_BLOCK,
-    STAGE_PROMPTS[phase],
-  ]
+    `Always speak and write ONLY in English.`;
+  return [languageLine, BASE_PROMPT, STICKY_GUARDRAILS, STAGE_PROMPTS[phase]]
     .join("\n\n")
     .trim();
 }
@@ -213,7 +167,8 @@ const agent = new RealtimeAgent({
 
 export const wsSession = new RealtimeSession(agent, {
   transport: "websocket",
-  model: "gpt-4o-realtime-preview-2025-06-03",
+  //model: "gpt-4o-realtime-preview-2025-06-03",
+  model: "gpt-realtime",
   config: {
     inputAudioFormat: "pcm16",
     outputAudioFormat: "pcm16",
@@ -234,10 +189,10 @@ export const wsSession = new RealtimeSession(agent, {
 (wsSession.on as any)("event", (ev: any) => {
   // When a model response starts/ends
   if (ev.type === "response.created") {
-    console.log(`[response.created] id=${ev.response?.id || "?"}`);
+    console.log(`[RTC][response.created] id=${ev.response?.id || "?"}`);
     // Guard: cancel any response before we've armed
     if (!realtimeArmed && ev.response?.id) {
-      console.log("[prompt] Cancelling early response (not yet armed)");
+      console.log("[RTC][prompt] Cancelling early response (not yet armed)");
       wsSession.transport.sendEvent({
         type: "response.cancel",
         response_id: ev.response.id,
@@ -252,7 +207,7 @@ export const wsSession = new RealtimeSession(agent, {
     ev.type === "response.failed" ||
     ev.type === "response.canceled"
   ) {
-    console.log(`[response.ended] type=${ev.type}`);
+    console.log(`[RTC][response.ended] type=${ev.type}`);
     agentSpeaking = false;
   }
 
@@ -260,12 +215,12 @@ export const wsSession = new RealtimeSession(agent, {
     ev.type === "error" &&
     ev?.error?.error?.code === "conversation_already_has_active_response"
   ) {
-    console.warn("[auto] server says active response already in progress");
+    console.warn("[RTC][auto] server says active response already in progress");
   }
 });
 
 wsSession.on("error", (e) =>
-  console.error("Realtime session error:", JSON.stringify(e, null, 2))
+  console.error("[RTC]Realtime session error:", JSON.stringify(e, null, 2))
 );
 
 // -----------------------------
@@ -327,9 +282,10 @@ export async function initRealtime(apiKey: string) {
 export async function startPhasedInterview() {
   if (_interviewStarted) return;
   _interviewStarted = true;
+
+  // One-shot greeting (no extra meta)
   speakOnce(
-    `Respond ONLY in English (${DEFAULT_LANGUAGE}). ` +
-      `Phase: intro. I’ll lead and timebox the session. Please share your screen and open a whiteboard. Any quick questions before we begin?`
+    `Welcome to the test interview. When you're ready, please share your screen and open a whiteboard.`
   );
 }
 
@@ -368,7 +324,7 @@ export function commitNow() {
   if (!realtimeArmed) return;
   if (isAgentSpeaking()) return;
   if (!canCommit()) return;
-  console.log("commitNow");
+  console.log("[RTC]commitNow");
   wsSession.transport.sendEvent({ type: "input_audio_buffer.commit" });
 
   // Wait for ASR to finish before creating the response
@@ -432,7 +388,7 @@ export function sendRealtimeAudio(data: ArrayBuffer, inputSampleRate = 16000) {
     .audioChannels(1)
     .audioCodec("pcm_s16le")
     .format("s16le")
-    .on("error", (err) => console.error("Resample error:", err.message))
+    .on("error", (err) => console.error("[RTC]Resample error:", err.message))
     .pipe(output);
 
   let buffer = Buffer.alloc(0);
@@ -466,7 +422,7 @@ function applyInstructions() {
       .replace(/\s+/g, " ")
       .slice(0, PROMPT_DEBUG_PREVIEW);
     console.log(
-      `[prompt][${currentPhase}] len=${
+      `[RTC][prompt][${currentPhase}] len=${
         finalInstructions.length
       } preview="${preview}${
         finalInstructions.length > PROMPT_DEBUG_PREVIEW ? "…" : ""
@@ -477,7 +433,7 @@ function applyInstructions() {
         .replace(/\s+/g, " ")
         .slice(0, PROMPT_DEBUG_PREVIEW);
       console.log(
-        `[prompt][overlay] ttl=${
+        `[RTC][prompt][overlay] ttl=${
           overlayClearTimer ? "active" : "n/a"
         } text="${oPrev}${
           overlayText.length > PROMPT_DEBUG_PREVIEW ? "…" : ""
@@ -498,7 +454,7 @@ function applyInstructions() {
     } catch (e) {
       if (PROMPT_DEBUG)
         console.warn(
-          "[prompt] failed to write instructions file:",
+          "[RTC][prompt] failed to write instructions file:",
           (e as any)?.message || e
         );
     }
@@ -512,7 +468,8 @@ function applyInstructions() {
 
 export function setPhase(next: Phase) {
   if (currentPhase === next) return;
-  if (PROMPT_DEBUG) console.log(`[prompt] SET_PHASE ${currentPhase} → ${next}`);
+  if (PROMPT_DEBUG)
+    console.log(`[RTC][prompt] SET_PHASE ${currentPhase} → ${next}`);
   currentPhase = next;
   overlayText = null;
   if (overlayClearTimer) {
@@ -529,7 +486,7 @@ export function setOverlay(text: string, ttlMs = 120_000) {
       .replace(/\s+/g, " ")
       .slice(0, PROMPT_DEBUG_PREVIEW);
     console.log(
-      `[prompt] SET_OVERLAY ttlMs=${ttlMs} text="${prev}${
+      `[RTC][prompt] SET_OVERLAY ttlMs=${ttlMs} text="${prev}${
         overlayText.length > PROMPT_DEBUG_PREVIEW ? "…" : ""
       }"`
     );
@@ -539,7 +496,9 @@ export function setOverlay(text: string, ttlMs = 120_000) {
   overlayClearTimer = setTimeout(() => {
     overlayText = null;
     if (PROMPT_DEBUG)
-      console.log("[prompt] OVERLAY expired; re-applying base instructions");
+      console.log(
+        "[RTC][prompt] OVERLAY expired; re-applying base instructions"
+      );
     applyInstructions();
   }, Math.max(10_000, ttlMs));
 }
