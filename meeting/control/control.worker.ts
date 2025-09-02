@@ -80,15 +80,11 @@ function maybeAdvanceToInterview(now = Date.now()) {
 
   currentPhase = "interview";
   lastPhaseEmitAt = now;
-  console.log(
-    "[worker]SET_PHASE, Whiteboard stabilized as blank/has_content (twice, spaced)."
-  );
   parentPort!.postMessage({
     type: "SET_PHASE",
     phase: "interview",
     reason: "Whiteboard stabilized as blank/has_content (twice, spaced).",
   });
-  console.log("[worker]SET_OVERLAY, Please draw a triangle on the screen.");
   // NEW: make the interviewer lead with a clear plan
   parentPort!.postMessage({
     type: "SET_OVERLAY",

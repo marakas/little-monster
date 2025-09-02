@@ -285,7 +285,7 @@ export async function startPhasedInterview() {
 
   // One-shot greeting (no extra meta)
   speakOnce(
-    `Welcome to the test interview. When you're ready, please share your screen and open a whiteboard.`
+    `You are the INTERVIEWER. Speak exactly this line and nothing else: "Welcome to the test interview. When you're ready, please share your screen and open a whiteboard."`
   );
 }
 
