@@ -26,6 +26,10 @@ export async function startScreencastCapture(
     maxHeight?: number;
   }
 ) {
+  if (process.env.VISION_ENABLED !== "1") {
+    console.log("📸 Vision disabled – not starting screencast");
+    return;
+  }
   const fps = Math.max(0.1, opts?.fps ?? 0.33);
   const minIntervalMs = Math.floor(1000 / fps);
   const quality = Math.min(100, Math.max(1, opts?.quality ?? 60));

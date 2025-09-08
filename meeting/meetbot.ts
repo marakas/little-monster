@@ -10,7 +10,6 @@ import {
   startScreencastCapture,
   getScreenshotDir,
 } from "./visual_screencast.ts";
-import chokidar from "chokidar";
 
 import {
   initRealtime,
@@ -48,6 +47,8 @@ import { enableStreamingMic } from "./micStreaming.ts";
 import { Worker } from "node:worker_threads";
 import { setOverlay, setPhase, type Phase } from "./realtimeClient.ts";
 import type { ControlAction, ControlEvent } from "./control/control.schema.ts";
+
+const VISION_ENABLED = process.env.VISION_ENABLED === "1";
 
 let latestRubricReport:
   | import("./control/control.schema.js").RubricReport
@@ -480,90 +481,100 @@ export async function startMeetBot(
       postToWorker({ type: "TICK", ts: Date.now() });
     }, 5_000);
     state.stopTick = () => clearInterval(tick);
+    if (VISION_ENABLED) {
+      // dynamic import so we avoid pulling chokidar when off
+      const { default: chokidar } = await import("chokidar");
 
-    // Start super-simple screenshots (1 fps is fine for diagram detection)
-    await startScreencastCapture(state.page!, state.sessionDir!, {
-      fps: 0.33, // 1 every ~3s (tune this)
-      quality: 60, // tune 40–70 if you want lighter writes
-      maxWidth: 1280,
-      maxHeight: 720,
-    });
-    const dir = getScreenshotDir();
-
-    if (dir) {
-      const absDir = path.resolve(dir);
-      const MIN_ANALYSIS_INTERVAL_MS = Number(
-        process.env.VISION_MIN_INTERVAL_MS || 5000
-      );
-      let lastRun = 0;
-
-      console.log(`👀 Watching for new screenshots in ${absDir}`);
-
-      // Chockidar watches the filesystem for new screenshot images
-      const watcher = chokidar.watch(absDir, {
-        persistent: true,
-        ignoreInitial: true,
-        depth: 0,
-        usePolling: true, // important for Docker/overlayfs
-        interval: 500,
-        binaryInterval: 500,
-        awaitWriteFinish: {
-          stabilityThreshold: 700,
-          pollInterval: 200,
-        },
+      // Start super-simple screenshots (1 fps is fine for diagram detection)
+      await startScreencastCapture(state.page!, state.sessionDir!, {
+        fps: 0.33, // 1 every ~3s (tune this)
+        quality: 60, // tune 40–70 if you want lighter writes
+        maxWidth: 1280,
+        maxHeight: 720,
       });
+      const dir = getScreenshotDir();
 
-      const maybeAnalyze = async (filePath: string) => {
-        if (!filePath.toLowerCase().endsWith(".jpg")) return;
-        latestScreenshotPath = filePath;
-        clickMeetGotIt(state.page);
-        console.log("state dismissed: ", state.dismissed);
-        console.log(`👀 [vision] file event: ${filePath}`);
-        const now = Date.now();
-        if (now - lastRun < MIN_ANALYSIS_INTERVAL_MS) {
-          if (process.env.VISION_DEBUG === "1") {
-            console.log("[vision] throttled – skipping analysis");
-          }
-          return;
-        }
-        lastRun = now;
+      if (dir) {
+        const absDir = path.resolve(dir);
+        const MIN_ANALYSIS_INTERVAL_MS = Number(
+          process.env.VISION_MIN_INTERVAL_MS || 5000
+        );
+        let lastRun = 0;
 
-        postToWorker({
-          type: "VISION_SNAPSHOT",
-          ts: Date.now(),
-          path: filePath,
+        console.log(`👀 Watching for new screenshots in ${absDir}`);
+
+        // Chockidar watches the filesystem for new screenshot images
+        const watcher = chokidar.watch(absDir, {
+          persistent: true,
+          ignoreInitial: true,
+          depth: 0,
+          usePolling: true, // important for Docker/overlayfs
+          interval: 500,
+          binaryInterval: 500,
+          awaitWriteFinish: {
+            stabilityThreshold: 700,
+            pollInterval: 200,
+          },
         });
-      };
 
-      watcher
-        .on("add", (p) => maybeAnalyze(p))
-        .on("change", (p) => maybeAnalyze(p))
-        .on("error", (err) => console.error("[vision] watcher error:", err));
+        const maybeAnalyze = async (filePath: string) => {
+          if (!filePath.toLowerCase().endsWith(".jpg")) return;
+          latestScreenshotPath = filePath;
+          clickMeetGotIt(state.page);
+          console.log("state dismissed: ", state.dismissed);
+          console.log(`👀 [vision] file event: ${filePath}`);
+          const now = Date.now();
+          if (now - lastRun < MIN_ANALYSIS_INTERVAL_MS) {
+            if (process.env.VISION_DEBUG === "1") {
+              console.log("[vision] throttled – skipping analysis");
+            }
+            return;
+          }
+          lastRun = now;
 
-      // Fallback scanner (in case fs events are missed)
-      const FALLBACK_SCAN_SEC = Number(process.env.VISION_SCAN_SEC || 10);
-      const scanTimer = setInterval(async () => {
-        try {
-          const entries = await fsp.readdir(absDir, { withFileTypes: true });
-          const jpgPaths = entries
-            .filter((d) => d.isFile() && d.name.toLowerCase().endsWith(".jpg"))
-            .map((d) => path.join(absDir, d.name));
+          postToWorker({
+            type: "VISION_SNAPSHOT",
+            ts: Date.now(),
+            path: filePath,
+          });
+        };
 
-          if (!jpgPaths.length) return;
+        watcher
+          .on("add", (p) => maybeAnalyze(p))
+          .on("change", (p) => maybeAnalyze(p))
+          .on("error", (err) => console.error("[vision] watcher error:", err));
 
-          const stats = await Promise.all(
-            jpgPaths.map(async (p) => {
-              const st = await fsp.stat(p);
-              return { p, mtimeMs: st.mtimeMs };
-            })
-          );
+        // Fallback scanner (in case fs events are missed)
+        const FALLBACK_SCAN_SEC = Number(process.env.VISION_SCAN_SEC || 10);
+        const scanTimer = setInterval(async () => {
+          try {
+            const entries = await fsp.readdir(absDir, { withFileTypes: true });
+            const jpgPaths = entries
+              .filter(
+                (d) => d.isFile() && d.name.toLowerCase().endsWith(".jpg")
+              )
+              .map((d) => path.join(absDir, d.name));
 
-          stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
-          await maybeAnalyze(stats[0].p);
-        } catch {
-          /* silent */
-        }
-      }, FALLBACK_SCAN_SEC * 1000);
+            if (!jpgPaths.length) return;
+
+            const stats = await Promise.all(
+              jpgPaths.map(async (p) => {
+                const st = await fsp.stat(p);
+                return { p, mtimeMs: st.mtimeMs };
+              })
+            );
+
+            stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+            await maybeAnalyze(stats[0].p);
+          } catch {
+            /* silent */
+          }
+        }, FALLBACK_SCAN_SEC * 1000);
+      }
+    } else {
+      console.log(
+        "🧯 Vision pipeline disabled (set VISION_ENABLED=1 to re-enable)."
+      );
     }
 
     await waitUntilJoined(120_000);
