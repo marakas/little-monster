@@ -60,6 +60,36 @@ const REEMIT_SUPPRESS_MS = 30_000;
 let goodBoardSamples: number[] = [];
 let lastRubric: RubricReport | null = null;
 
+function overlayObjectives() {
+  if (!scenario.objectives?.length) return;
+  const text = "🎯 Objectives:\n- " + scenario.objectives.join("\n- ");
+  maybeOverlay(text, "obj", 120_000);
+}
+
+function overlayPhrase(i = 0) {
+  const p = scenario.phrases?.[i];
+  if (!p) return;
+  const line = `${p.jp}${p.romaji ? ` (${p.romaji})` : ""}${
+    p.gloss ? ` — ${p.gloss}` : ""
+  }`;
+  maybeOverlay(`Practice line:\n${line}`, `phrase:${i}`, 120_000);
+}
+
+function overlayRoleplay(i = 0) {
+  const r = scenario.roleplays?.[i];
+  if (!r) return;
+  const text = [
+    `🎭 Role-play: ${r.scene}`,
+    `Goal: ${r.yourGoal}`,
+    `Partner: ${r.partnerRole}`,
+    `Prompt: ${r.prompt}`,
+    r.successHint ? `Hint: ${r.successHint}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  maybeOverlay(text, `roleplay:${i}`, 150_000);
+}
+
 async function fileToBase64(p: string): Promise<string> {
   const buf = await readFile(p);
   return buf.toString("base64");
@@ -296,7 +326,8 @@ function handleVisionUpdate(
 // ---------- hello overlay ----------
 parentPort.postMessage({
   type: "SET_OVERLAY",
-  text: "👋 Triangle test online. Please share your whiteboard when ready.",
+  text:
+    scenario.overlays?.helloOverlay ?? "👋 Lesson online. We’ll start shortly.",
   ttlMs: 30_000,
 });
 
@@ -304,48 +335,105 @@ parentPort.postMessage({
 parentPort.on("message", (ev: ControlEvent) => {
   switch (ev.type) {
     case "HELLO": {
+      // reset lightweight state
       tickCount = 0;
       transcriptLines = 0;
       transcriptChars = 0;
       lastActivityAt = Date.now();
       inactivityStage = 0;
+
       lastVisionState = null;
       lastVisionComponents = 0;
       lastVisionSummary = null;
+
       currentPhase = "intro";
       lastPhaseEmitAt = 0;
       goodBoardSamples = [];
-      console.log(
-        "[worker] SET_OVERLAY, Welcome to the test interview. Please share your whiteboard.."
-      );
+
+      console.log("[worker] HELLO → intro; sending welcome overlay");
       parentPort!.postMessage({
         type: "SET_OVERLAY",
         text: "Welcome to the Japanese mini-lesson. We’ll learn a simple self-introduction and then you’ll try it.",
         ttlMs: 45_000,
       });
+
+      // NEW: show course objectives card (if present)
+      overlayObjectives();
+
       scheduleNextAssessment();
+      break;
+    }
+
+    case "TRANSCRIPT_APPENDED": {
+      transcriptLines += 1;
+      transcriptChars += ev.text.length;
+      pushTranscript(ev.ts || Date.now(), ev.text);
+
+      const preview = ev.text.replace(/\s+/g, " ").slice(0, 120);
+      console.log(
+        `[worker][control] TRANSCRIPT line#${transcriptLines} (+${
+          ev.text.length
+        } chars): "${preview}${ev.text.length > 120 ? "…" : ""}"`
+      );
+      lastActivityAt = Date.now();
+      inactivityStage = 0;
+
+      // NEW: lightweight "ack" detector to leave intro → teach (whiteboard_gate)
+      if (currentPhase === "intro") {
+        const ack =
+          /\b(yes|ok|okay|sure|sounds good|understand|got it|ready|start)\b/i;
+
+        if (ack.test(ev.text) || transcriptLines >= 1) {
+          currentPhase = "whiteboard_gate"; // reuse as "teach" stage
+          lastPhaseEmitAt = Date.now();
+
+          parentPort!.postMessage({
+            type: "SET_PHASE",
+            phase: "whiteboard_gate",
+            reason: "Intro acknowledged; moving to pattern teaching.",
+          });
+
+          // Instructional card first…
+          maybeOverlay(
+            "Pattern: はじめまして → わたしは {NAME} です → {COMPANY} の {ROLE} です → よろしくお願いします。",
+            "teach:pattern",
+            120_000
+          );
+
+          // …then (after global overlay cooldown) show the first practice line
+          setTimeout(() => overlayPhrase(0), OVERLAY_SUPPRESS_MS + 500);
+        }
+      }
       break;
     }
 
     case "TICK": {
       tickCount += 1;
-      // Advance to practice after ~25s in teach, or if they’ve spoken twice already
+
+      // Advance teach → practice after ~25s or once the learner is engaged
       if (currentPhase === "whiteboard_gate") {
         const enoughTime = Date.now() - lastPhaseEmitAt > 25_000;
         const engaged = transcriptLines >= 3;
+
         if (enoughTime || engaged) {
           currentPhase = "interview";
           lastPhaseEmitAt = Date.now();
+
           parentPort!.postMessage({
             type: "SET_PHASE",
             phase: "interview",
             reason: "Teach stage complete; inviting learner to try.",
           });
+
+          // Instructional prompt first…
           maybeOverlay(
             "Your turn: please introduce yourself using the pattern. I’ll help with corrections.",
             "practice:start",
             120_000
           );
+
+          // …then (after cooldown) cue the first role-play card (if defined)
+          setTimeout(() => overlayRoleplay(0), OVERLAY_SUPPRESS_MS + 500);
         }
       }
 
@@ -357,7 +445,7 @@ parentPort.on("message", (ev: ControlEvent) => {
 
       if (idleFor >= INACTIVITY_ESC_MS && inactivityStage < 8) {
         const text = buildInactivityNudge();
-        maybeOverlay(text, `inactivity:8:${currentPhase}`, 180_000); // longer TTL on escalation
+        maybeOverlay(text, `inactivity:8:${currentPhase}`, 180_000);
         inactivityStage = 8;
         console.log(
           `[worker][control] INACTIVITY escalation overlay after ${Math.round(
@@ -381,43 +469,6 @@ parentPort.on("message", (ev: ControlEvent) => {
             lastVisionState ?? "n/a"
           } comps=${lastVisionComponents} | lines=${transcriptLines} chars=${transcriptChars}`
         );
-      }
-      break;
-    }
-
-    case "TRANSCRIPT_APPENDED": {
-      transcriptLines += 1;
-      transcriptChars += ev.text.length;
-      pushTranscript(ev.ts || Date.now(), ev.text);
-
-      const preview = ev.text.replace(/\s+/g, " ").slice(0, 120);
-      console.log(
-        `[worker][control] TRANSCRIPT line#${transcriptLines} (+${
-          ev.text.length
-        } chars): "${preview}${ev.text.length > 120 ? "…" : ""}"`
-      );
-      lastActivityAt = Date.now();
-      inactivityStage = 0;
-
-      // NEW: lightweight "ack" detector to leave intro
-      if (currentPhase === "intro") {
-        const ack =
-          /\b(yes|ok|okay|sure|sounds good|understand|got it|ready|start)\b/i;
-
-        if (ack.test(ev.text) || transcriptLines >= 1) {
-          currentPhase = "whiteboard_gate"; // we reuse this slot as "teach pattern"
-          lastPhaseEmitAt = Date.now();
-          parentPort!.postMessage({
-            type: "SET_PHASE",
-            phase: "whiteboard_gate",
-            reason: "Intro acknowledged; moving to pattern teaching.",
-          });
-          maybeOverlay(
-            "Pattern: はじめまして → わたしは {NAME} です → {COMPANY} の {ROLE} です → よろしくお願いします。",
-            "teach:pattern",
-            120_000
-          );
-        }
       }
       break;
     }
