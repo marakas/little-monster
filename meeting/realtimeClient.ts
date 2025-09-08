@@ -7,6 +7,8 @@ import { RealtimeAgent, RealtimeSession } from "@openai/agents/realtime";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
 import { PassThrough } from "stream";
+import { getScenario } from "./scenarios/index.ts";
+import type { Phase } from "./scenarios/types.ts";
 
 const DEFAULT_LANGUAGE = process.env.INTERVIEW_LANG ?? "en-US";
 const DEFAULT_VOICE = process.env.INTERVIEW_VOICE ?? "alloy"; // any valid realtime voice
@@ -40,8 +42,8 @@ export function onRealtimeEvent(cb: (ev: any) => void) {
   (wsSession.on as any)("event", cb);
 }
 
-export const PHASES = ["intro", "whiteboard_gate", "interview"] as const;
-export type Phase = (typeof PHASES)[number];
+//export const PHASES = ["intro", "whiteboard_gate", "interview"] as const;
+//export type Phase = (typeof PHASES)[number];
 
 export function setRealtimeArmed(on: boolean) {
   realtimeArmed = on;
@@ -89,71 +91,13 @@ export function registerAssessmentProvider(
 
 let currentPhase: Phase = "intro";
 
-// ---- Scenario + rubric (hidden; never reveal verbatim) ----
-const SCENARIO_TITLE = "Design Instagram";
-const STICKY_GUARDRAILS = `
-RULES:
-- Speak and write ONLY in English (${DEFAULT_LANGUAGE}).
-- Follow the current PHASE exactly.
-- Keep replies short (≤2 sentences).
-- Do not add extra tasks or coaching; stick to the triangle test.
-- If asked unrelated questions, politely steer back to the task.
-`.trim();
-
-const BASE_PROMPT = `
-You are the interviewer for a very simple live test.
-Your goals:
-1) Greet the candidate.
-2) Ask them to share a whiteboard.
-3) Ask them to draw a triangle.
-Do not over-explain. Be brief and polite.
-`.trim();
-
-const STAGE_PROMPTS: Record<Phase, string> = {
-  intro: `
-PHASE: Intro
-Say once:
-- "Welcome to the test interview."
-
-Then wait. If they engage, you can add:
-- "When you're ready, please share your screen and open a whiteboard."
-
-Do not advance phases yourself.
-`.trim(),
-
-  whiteboard_gate: `
-PHASE: Whiteboard Gate
-Goal: Ensure a readable whiteboard is visible.
-
-Say (only if needed):
-- "Please share your whiteboard (Miro/Excalidraw/Jamboard/Figma works). I'll wait."
-
-Do not advance phases yourself; a supervisor will switch phases when a board is visible.
-`.trim(),
-
-  interview: `
-PHASE: Interview (Single Task)
-Say:
-- "Please draw a triangle on the screen."
-
-If they draw it, acknowledge briefly:
-- "Great, thank you."
-
-If they ask for specifics:
-- "Any simple triangle is fine."
-
-Do not add more tasks.
-`.trim(),
-};
-
-// Compose per-phase instructions without overlays.
+// Compose per-phase instructions from the active scenario.
 function makeInstructions(phase: Phase) {
+  const s = getScenario();
   const languageLine =
     `LANGUAGE: English (${DEFAULT_LANGUAGE}). ` +
-    `Always speak and write ONLY in English.`;
-  return [languageLine, BASE_PROMPT, STICKY_GUARDRAILS, STAGE_PROMPTS[phase]]
-    .join("\n\n")
-    .trim();
+    `Always speak and write ONLY in English unless showing the Japanese line.`;
+  return [languageLine, s.base, s.sticky, s.stage[phase]].join("\n\n").trim();
 }
 
 // ---------------
@@ -283,9 +227,9 @@ export async function startPhasedInterview() {
   if (_interviewStarted) return;
   _interviewStarted = true;
 
-  // One-shot greeting (no extra meta)
+  const s = getScenario();
   speakOnce(
-    `You are the INTERVIEWER. Speak exactly this line and nothing else: "Welcome to the test interview. When you're ready, please share your screen and open a whiteboard."`
+    `You are the instructor/interviewer. Speak exactly this line and nothing else: "${s.greetingLine}"`
   );
 }
 

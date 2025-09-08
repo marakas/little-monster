@@ -18,6 +18,10 @@ import type {
 if (!parentPort)
   throw new Error("control.worker must be started as a worker thread");
 
+import { getScenario } from "../scenarios/index.js";
+
+const scenario = getScenario();
+
 // ---------- paths ----------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -67,32 +71,6 @@ function pruneOld(now = Date.now()) {
 function noteGoodBoard(ts = Date.now()) {
   goodBoardSamples.push(ts);
   pruneOld(ts);
-}
-
-function maybeAdvanceToInterview(now = Date.now()) {
-  if (currentPhase === "interview") return;
-  pruneOld(now);
-  if (goodBoardSamples.length < 2) return;
-  const first = goodBoardSamples[0];
-  const last = goodBoardSamples[goodBoardSamples.length - 1];
-  if (last - first < GATE_MIN_SEP_MS) return;
-  if (now - lastPhaseEmitAt < REEMIT_SUPPRESS_MS) return;
-
-  currentPhase = "interview";
-  lastPhaseEmitAt = now;
-  parentPort!.postMessage({
-    type: "SET_PHASE",
-    phase: "interview",
-    reason: "Whiteboard stabilized as blank/has_content (twice, spaced).",
-  });
-  // NEW: make the interviewer lead with a clear plan
-  parentPort!.postMessage({
-    type: "SET_OVERLAY",
-    text: ["Please draw a triangle on the screen."].join(" "),
-    ttlMs: 90_000,
-  });
-
-  goodBoardSamples = [];
 }
 
 // ---------- transcript window (for rubric) ----------
@@ -296,11 +274,9 @@ async function emitFinalReport(reason?: string) {
 }
 
 function buildInactivityNudge(): string {
-  if (currentPhase !== "interview") {
-    return "Please share your whiteboard (Miro/Excalidraw/Jamboard/Figma).";
-  }
-  // interview phase default nudge:
-  return "Please draw a triangle on the screen. Any simple triangle is fine.";
+  return (
+    scenario.overlays?.inactivityNudge(currentPhase) ?? "Ready to continue?"
+  );
 }
 
 function handleVisionUpdate(
@@ -313,29 +289,6 @@ function handleVisionUpdate(
   lastVisionComponents = componentsCount ?? 0;
   lastVisionSummary = summary ?? null;
 
-  if (GOOD_STATES.has(state)) {
-    noteGoodBoard(evTs || Date.now());
-    maybeAdvanceToInterview();
-  } else {
-    pruneOld();
-    if (currentPhase === "whiteboard_gate") {
-      console.log(
-        "[worker] maybe overlay :I’m not seeing a whiteboard yet—please share your screen with Miro/Excalidraw/Jamboard/Figma. "
-      );
-      maybeOverlay(
-        "I’m not seeing a whiteboard yet—please share your screen with Miro/Excalidraw/Jamboard/Figma.",
-        "wb:nudge",
-        60_000
-      );
-    }
-  }
-
-  const sum = (summary ?? "").replace(/\s+/g, " ").slice(0, 160);
-  console.log(
-    `[worker][control] VISION state=${state} comps=${lastVisionComponents} summary="${sum}${
-      (summary ?? "").length > 160 ? "…" : ""
-    }"`
-  );
   lastActivityAt = Date.now();
   inactivityStage = 0;
 }
@@ -367,7 +320,7 @@ parentPort.on("message", (ev: ControlEvent) => {
       );
       parentPort!.postMessage({
         type: "SET_OVERLAY",
-        text: "Welcome to the test interview. Please share your whiteboard.",
+        text: "Welcome to the Japanese mini-lesson. We’ll learn a simple self-introduction and then you’ll try it.",
         ttlMs: 45_000,
       });
       scheduleNextAssessment();
@@ -376,9 +329,26 @@ parentPort.on("message", (ev: ControlEvent) => {
 
     case "TICK": {
       tickCount += 1;
+      // Advance to practice after ~25s in teach, or if they’ve spoken twice already
+      if (currentPhase === "whiteboard_gate") {
+        const enoughTime = Date.now() - lastPhaseEmitAt > 25_000;
+        const engaged = transcriptLines >= 3;
+        if (enoughTime || engaged) {
+          currentPhase = "interview";
+          lastPhaseEmitAt = Date.now();
+          parentPort!.postMessage({
+            type: "SET_PHASE",
+            phase: "interview",
+            reason: "Teach stage complete; inviting learner to try.",
+          });
+          maybeOverlay(
+            "Your turn: please introduce yourself using the pattern. I’ll help with corrections.",
+            "practice:start",
+            120_000
+          );
+        }
+      }
 
-      // existing checks
-      maybeAdvanceToInterview();
       if (Date.now() >= nextAssessAt) void runRubricAssessment();
 
       // ---- inactivity watchdog ----
@@ -432,32 +402,19 @@ parentPort.on("message", (ev: ControlEvent) => {
       // NEW: lightweight "ack" detector to leave intro
       if (currentPhase === "intro") {
         const ack =
-          /\b(yes|ok|okay|sure|sounds good|understand|got it|ready)\b/i;
-        const askedAQuestion =
-          /(\?|could you|can you|what about|how do|how would)/i;
+          /\b(yes|ok|okay|sure|sounds good|understand|got it|ready|start)\b/i;
 
-        // Heuristics: either explicit ack OR user has engaged with ≥1 lines and not silence
-        if (
-          ack.test(ev.text) ||
-          transcriptLines >= 2 ||
-          askedAQuestion.test(ev.text)
-        ) {
-          currentPhase = "whiteboard_gate";
+        if (ack.test(ev.text) || transcriptLines >= 1) {
+          currentPhase = "whiteboard_gate"; // we reuse this slot as "teach pattern"
           lastPhaseEmitAt = Date.now();
-          console.log(
-            "[worker]SET_PHASE,whiteboard_gate, Intro acknowledged; prompting to share whiteboard."
-          );
           parentPort!.postMessage({
             type: "SET_PHASE",
             phase: "whiteboard_gate",
-            reason: "Intro acknowledged; prompting to share whiteboard.",
+            reason: "Intro acknowledged; moving to pattern teaching.",
           });
-          console.log(
-            "[worker]maybeOverlay, Please share your screen and open a whiteboard (Miro/Excalidraw/Jamboard/Figma)."
-          );
           maybeOverlay(
-            "Please share your screen and open a whiteboard (Miro/Excalidraw/Jamboard/Figma).",
-            "wb:prompt",
+            "Pattern: はじめまして → わたしは {NAME} です → {COMPANY} の {ROLE} です → よろしくお願いします。",
+            "teach:pattern",
             120_000
           );
         }
