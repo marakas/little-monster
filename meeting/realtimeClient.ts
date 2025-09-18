@@ -52,7 +52,7 @@ export function setRealtimeArmed(on: boolean) {
     session: {
       turn_detection: {
         type: "semantic_vad",
-        eagerness: "medium",
+        eagerness: "high",
         create_response: on,
         interrupt_response: true,
       },
@@ -122,7 +122,7 @@ export const wsSession = new RealtimeSession(agent, {
     },
     turnDetection: {
       type: "semantic_vad",
-      eagerness: "medium",
+      eagerness: "high",
       createResponse: false, // start DISARMED
       interruptResponse: true,
     },
@@ -321,7 +321,7 @@ export function sendRealtimeAudio(data: ArrayBuffer, inputSampleRate = 16000) {
     send16k(buf);
     return;
   }
-  const MAX_CHUNK_SIZE = 8192;
+  const MAX_CHUNK_SIZE = 4096; // ~128 ms at 16 kHz, smoother VAD + lower latency;
   const input = new PassThrough();
   const output = new PassThrough();
   input.end(Buffer.from(data));

@@ -18,7 +18,7 @@ import type {
 if (!parentPort)
   throw new Error("control.worker must be started as a worker thread");
 
-import { getScenario } from "../scenarios/index.js";
+import { getScenario } from "../scenarios/index.ts";
 
 const scenario = getScenario();
 

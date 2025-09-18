@@ -252,9 +252,7 @@ export async function startMeetBot(
           type: "TRANSCRIPT_APPENDED",
           ts: Date.now(),
           text: String(ev.transcript || ""),
-        });
-
-        // Also persist to your final transcription log
+        } as any);
         try {
           if (state.transcriptionLogPath) {
             fs.appendFileSync(state.transcriptionLogPath, ev.transcript + "\n");
@@ -393,7 +391,7 @@ export async function startMeetBot(
     let outPrimed = false;
     let outWarmup: number[] = [];
     const MODEL_OUT_RATE = 24000; // server sends 24 kHz PCM16
-    const PREROLL_MS = 320;
+    const PREROLL_MS = 160;
     const PREROLL_SAMPLES = Math.floor((MODEL_OUT_RATE * PREROLL_MS) / 1000);
 
     onRealtimeAudio((ab: ArrayBuffer) => {
@@ -595,11 +593,7 @@ export async function startMeetBot(
           ev.type === "response.canceled")
       ) {
         greetingPending = false;
-
-        // Double-clear: drop anything buffered during TTS playback
         clearInputBuffer();
-        clearInputBuffer();
-
         // NOW let the SDK manage turns and barge-in
         setRealtimeArmed(true);
       }
