@@ -42,7 +42,11 @@ import {
   type MeetingPlatform,
 } from "./utils.ts";
 
-import { joinGoogleMeet, clickMeetGotIt } from "./platforms/joinGoogleMeet.ts";
+import {
+  joinGoogleMeet,
+  clickMeetGotIt,
+  presentChromeTabInMeet,
+} from "./platforms/joinGoogleMeet.ts";
 import { enableStreamingMic } from "./micStreaming.ts";
 import { Worker } from "node:worker_threads";
 import { setOverlay, setPhase, type Phase } from "./realtimeClient.ts";
@@ -354,7 +358,7 @@ export async function startMeetBot(
       browserArgs.push(
         "--use-fake-device-for-media-stream",
         "--use-file-for-fake-audio-capture=/dev/null", // avoid errors
-        "--use-fake-ui-for-media-stream",
+        //"--use-fake-ui-for-media-stream",
         "--enable-logging",
         "--enable-audio-output",
         "--allow-file-access-from-files"
@@ -364,6 +368,9 @@ export async function startMeetBot(
         "🔧 Using real media access for Google Meet (puppeteer-stream capture)"
       );
     }
+
+    //browserArgs.push(`--auto-select-desktop-capture-source=${SHARE_TAB_TITLE}`);
+    browserArgs.push("--auto-select-desktop-capture-source=Google");
 
     // Construct default PulseAudio socket path
     const pulseSocket =
@@ -386,6 +393,7 @@ export async function startMeetBot(
 
     assert(state.activeBrowser);
     const page = await state.activeBrowser.newPage();
+    await page.bringToFront();
     await enableStreamingMic(page);
 
     let outPrimed = false;
@@ -452,9 +460,9 @@ export async function startMeetBot(
     await delay(2000);
 
     const context = state.activeBrowser.defaultBrowserContext();
-
+    const meetOrigin = new URL(transformedMeetUrl).origin;
     // ✅ **Grant Permissions for WebRTC & Media** (enhanced from your working code)
-    await context.overridePermissions(transformedMeetUrl, [
+    await context.overridePermissions(meetOrigin, [
       "camera",
       "microphone",
       "notifications",
@@ -468,6 +476,12 @@ export async function startMeetBot(
     });
     // optional: give SPA a moment, then proceed
     await page.waitForSelector("body", { timeout: 60_000 });
+    page.on("console", (m) => console.log("[meet]", m.text()));
+    page.on("pageerror", (e) => console.log("[meet][pageerror]", e));
+    page.on("requestfailed", (r) =>
+      console.log("[meet][reqfail]", r.url(), r.failure()?.errorText)
+    );
+
     await joinGoogleMeet(page, transformedMeetUrl);
     await audioCapture(page, meetingPlatform);
     monitorKickout(page);
@@ -575,9 +589,51 @@ export async function startMeetBot(
       );
     }
 
+    // Make sure we’re already in the call and outbound is primed…
     await waitUntilJoined(120_000);
-    // Confirm the call UI is live, then prime outbound audio before speaking
     await waitForOutboundReady();
+
+    // Open the presenter tab -> Google
+    const SHARE_TAB_TITLE = process.env.PRESENTER_TITLE ?? "Google";
+    const PRESENTER_URL =
+      process.env.PRESENTER_URL ?? "https://www.google.com/ncr";
+
+    const presenterPage = await state.activeBrowser!.newPage();
+    await presenterPage.goto(PRESENTER_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 120_000,
+    });
+
+    // Verify Chrome sees the expected title for auto-select
+    const actualTitle = await presenterPage.title();
+    console.log("[presenter] title ->", actualTitle);
+
+    // Be lenient: some locales still return "Google"
+    if (!actualTitle.includes(SHARE_TAB_TITLE)) {
+      console.warn(
+        `[presenter] Title mismatch. Expected to include "${SHARE_TAB_TITLE}".`
+      );
+    }
+
+    await delay(800); // give Chrome time to register the tab
+    await state.page!.bringToFront(); // focus Meet for UI clicks
+
+    // Kick off share
+    await presentChromeTabInMeet(state.page!);
+
+    // Best-effort confirmation (you already have this check later; it’s fine to keep one)
+    const presenting = await state.page!.evaluate(() => {
+      const t = document.body.innerText || "";
+      return (
+        t.includes("You’re presenting") ||
+        t.includes("You are presenting") ||
+        t.includes("共有しています") ||
+        t.includes("提示しています")
+      );
+    });
+    console.log(
+      presenting ? "✅ Presenting detected" : "⚠️ Presenting not detected"
+    );
 
     setRealtimeArmed(true); // now safe to allow auto turns
     clearInputBuffer(); // first clear (pre-greeting)
