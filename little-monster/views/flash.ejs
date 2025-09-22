@@ -1,0 +1,13 @@
+<% if (typeof error !== "undefined" && error) { %>
+<div
+  class="mb-4 rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700"
+>
+  <%= error %>
+</div>
+<% } %> <% if (typeof success !== "undefined" && success) { %>
+<div
+  class="mb-4 rounded-lg bg-green-50 border border-green-200 p-3 text-sm text-green-700"
+>
+  <%= success %>
+</div>
+<% } %>

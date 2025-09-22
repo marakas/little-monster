@@ -1,0 +1,63 @@
+<section class="mx-auto grid max-w-6xl gap-10 md:grid-cols-2">
+  <div class="flex flex-col justify-between">
+    <button
+      onclick="history.back()"
+      class="inline-flex items-center gap-2 text-gray-500 hover:text-gray-800"
+    >
+      ← Return
+    </button>
+
+    <div class="my-8">
+      <h1 class="text-4xl font-extrabold leading-tight">
+        Log in to <span class="text-blue-600">Little Monster</span>
+      </h1>
+      <p class="mt-3 text-lg text-gray-600">Welcome</p>
+    </div>
+  </div>
+
+  <div class="relative">
+    <div class="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+      <%- await include("flash", { error, success }) %>
+      <form method="post" class="space-y-4">
+        <div>
+          <label class="block text-sm font-semibold mb-1" for="email"
+            >Email</label
+          >
+          <input
+            class="w-full rounded-lg border border-gray-300 px-3 py-2"
+            id="email"
+            name="email"
+            type="email"
+            value="<%= email || '' %>"
+            placeholder="you@example.com"
+            required
+          />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold mb-1" for="password"
+            >Password</label
+          >
+          <input
+            class="w-full rounded-lg border border-gray-300 px-3 py-2"
+            id="password"
+            name="password"
+            type="password"
+            placeholder="••••••••"
+            required
+          />
+        </div>
+        <button
+          class="w-full rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700"
+        >
+          Log In
+        </button>
+      </form>
+      <div class="mt-4 text-sm text-gray-600">
+        New here?
+        <a class="text-blue-600 hover:underline" href="/register">
+          Create an account & set up your 15-minute lesson
+        </a>
+      </div>
+    </div>
+  </div>
+</section>

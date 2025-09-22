@@ -1,0 +1,15 @@
+{
+  "name": "little-monster-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun server.js",
+    "start": "bun server.js"
+  },
+  "dependencies": {
+    "ejs": "latest",
+    "hono": "latest",
+    "jose": "latest",
+    "nanoid": "latest"
+  }
+}

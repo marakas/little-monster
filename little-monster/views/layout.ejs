@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title><%= title || "Little Monster" %></title>
+
+    <!-- Tailwind (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- htmx for tiny progressive enhancement -->
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+
+    <link rel="icon" href="/public/favicon.svg" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined"
+    />
+    <style>
+      .material-symbols-outlined {
+        font-family: "Material Symbols Outlined";
+        font-weight: normal;
+        font-style: normal;
+        font-size: 1em;
+        line-height: 1;
+        letter-spacing: normal;
+        text-transform: none;
+        display: inline-block;
+        white-space: nowrap;
+        word-wrap: normal;
+        direction: ltr;
+        font-feature-settings: "liga";
+        -webkit-font-feature-settings: "liga";
+        -webkit-font-smoothing: antialiased;
+      }
+    </style>
+    <style>
+      .bg-glow {
+        position: absolute;
+        right: -10%;
+        bottom: -10%;
+        width: 45vw;
+        aspect-ratio: 1 / 1;
+        border-radius: 9999px;
+        filter: blur(60px);
+        background: radial-gradient(
+          ellipse at center,
+          rgba(59, 130, 246, 0.25),
+          transparent 60%
+        );
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body class="min-h-screen bg-gray-50 text-gray-900">
+    <div class="bg-glow"></div>
+    <main class="min-h-screen w-full px-6 md:px-12 py-8"><%- body %></main>
+  </body>
+</html>
