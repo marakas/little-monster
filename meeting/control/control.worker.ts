@@ -20,6 +20,7 @@ if (!parentPort)
 
 import { getScenario } from "../scenarios/index.ts";
 
+const ASSESSMENT_MODEL = process.env.ASSESSMENT_MODEL ?? "gpt-4o-mini";
 const scenario = getScenario();
 
 // ---------- paths ----------
@@ -243,7 +244,7 @@ Produce a JSON object with:
   let jsonText = "{}";
   try {
     const resp = await openai.responses.create({
-      model: "gpt-4o-mini",
+      model: ASSESSMENT_MODEL,
       input: [
         { role: "system", content: system },
         { role: "user", content: user },

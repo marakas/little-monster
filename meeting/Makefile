@@ -1,4 +1,5 @@
-.PHONY: build buildx
+MEET_URL ?= https://meet.google.com/cek-bmji-quw?authuser=1
+.PHONY: build buildx run
 
 buildx:
 	docker buildx build --platform linux/amd64 -t design-bot .
@@ -18,5 +19,5 @@ dev: .env
 	cp .env.example .env
 
 run:
+	open -g "$(MEET_URL)"
 	docker run --rm -it -p 3000:3000 --name design-bot --env-file .env -e LOCAL_MODE=1 design-bot
-

@@ -5,6 +5,10 @@ import { stopAudioProcessing, stopMeetBot } from "../stop_meet_bot.ts";
 export async function clickMeetGotIt(page: Page) {
   if (state.dismissed) return true;
 
+  await page.bringToFront();
+  const focus = await page.evaluate(() => document.hasFocus());
+  console.log("[meet] hasFocus:", focus);
+
   const DIALOG_BY_ARIA =
     "div.VfPpkd-P5QLlc[role='dialog'][aria-label='Others may see your video differently'], " +
     "div.VfPpkd-P5QLlc[role='dialog'][aria-label*='Others may see your video differently'], " + // defensive, but still specific
@@ -661,4 +665,197 @@ export async function joinGoogleMeet(page: Page, meetUrl: string) {
   } catch (e) {
     console.log("⚠️ Failed to dismiss 'Got it' dialog:", e);
   }
+}
+
+// --- Minimal helpers for Meet UI clicks ---
+async function _clickOneOf(page: Page, selectors: string[]) {
+  for (const sel of selectors) {
+    const el = await page.$(sel);
+    if (el) {
+      await el.click({ delay: 20 });
+      return true;
+    }
+  }
+  return false;
+}
+
+async function _clickMenuItemByText(page: Page, texts: string[]) {
+  return await page.evaluate((texts) => {
+    // 1) Try direct role=menuitem nodes whose visible text contains any target
+    const items = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[role="menuitem"], [role="menu"] [role="menuitem"]'
+      )
+    );
+    for (const item of items) {
+      const label = (item.innerText || item.textContent || "").trim();
+      if (texts.some((t) => label.includes(t))) {
+        item.click();
+        return true;
+      }
+    }
+
+    // 2) Fallback: find <span> text, then bubble up to ancestor role=menuitem
+    const spans = Array.from(document.querySelectorAll<HTMLElement>("span"));
+    for (const s of spans) {
+      const txt = (s.innerText || s.textContent || "").trim();
+      if (texts.some((t) => txt.includes(t))) {
+        let el: HTMLElement | null = s;
+        while (el && el.getAttribute("role") !== "menuitem")
+          el = el.parentElement;
+        if (el) {
+          el.click();
+          return true;
+        }
+      }
+    }
+    return false;
+  }, texts);
+}
+
+async function _controlsVisible(page: Page) {
+  // Nudge the mouse so Meet's control bar appears
+  try {
+    await page.mouse.move(500, 500);
+  } catch {}
+  await delay(200);
+}
+
+// --- Start sharing a Chrome tab in Meet ---
+// Assumes Chromium was launched with: --auto-select-desktop-capture-source=<tab title>
+export async function presentChromeTabInMeet(page: Page): Promise<boolean> {
+  await _controlsVisible(page);
+
+  // NEW: include “Share screen” & Japanese, plus stable fallbacks seen in your HTML
+  const opened = await _clickOneOf(page, [
+    'button[aria-label*="Share screen"]', // en
+    'button[aria-label*="Present now"]',
+    'button[aria-label*="Present"]',
+    'button[aria-label*="画面を共有"]', // ja
+    'div[aria-label*="Present"]',
+    'div[aria-label*="提示"]',
+    'button[data-promo-anchor-id="hNGZQc"]', // from your snippet
+    'button[jsname="hNGZQc"]', // from your snippet
+  ]);
+  if (!opened) {
+    console.log("⚠️ Could not find the Present/Share button.");
+    // quick debug to see what Meet exposes right now
+    await _debugToolbarButtons(page);
+    return false;
+  }
+
+  // Wait for the share menu (it can be a popup menu element)
+  const menuAppeared = await page.evaluate(async () => {
+    const hasMenu = () =>
+      !!document.querySelector('[role="menu"], div[role="menu"]');
+    if (hasMenu()) return true;
+    // give the DOM a moment
+    await new Promise((r) => setTimeout(r, 200));
+    return hasMenu();
+  });
+
+  // Pick “A tab” / “Chrome tab” variants (en + ja)
+  if (menuAppeared) {
+    const picked = await _clickMenuItemByText(page, [
+      "A tab",
+      "A Tab",
+      "Chrome tab",
+      "Chrome タブ",
+      "Chrome のタブ",
+      "このタブ",
+      "タブ",
+      "タブを表示",
+      "タブ（音声付き）",
+    ]);
+    if (!picked) {
+      console.log("⚠️ Could not find the 'A tab' menu item.");
+      // Not fatal—auto-select may still kick in if Chromium already has a target title
+    }
+  } else {
+    // Some builds start sharing immediately when auto-select is present
+    console.log(
+      "ℹ️ No menu appeared; assuming auto-select will share the tab."
+    );
+  }
+
+  // With --auto-select-desktop-capture-source, Chrome should start sharing.
+  await delay(1200);
+
+  // Confirm we’re presenting (best-effort across locales)
+  try {
+    const ok = await page.waitForFunction(
+      () => {
+        const qs = [
+          '[aria-label*="presenting"]',
+          '[aria-label*="提示しています"]',
+          'button[aria-label*="Stop presenting"]',
+          'button[aria-label*="提示を停止"]',
+          // sometimes a “You’re presenting” chip lives in the DOM
+          "*:not(script):not(style)",
+        ];
+        // quick text scan as last resort
+        const text = document.body.innerText || "";
+        const chip =
+          text.includes("You’re presenting") ||
+          text.includes("You are presenting") ||
+          text.includes("共有しています") ||
+          text.includes("提示しています");
+        return qs.some((sel) => document.querySelector(sel)) || chip;
+      },
+      { timeout: 8000 }
+    );
+    if (ok) console.log("✅ Meet indicates we are presenting a tab.");
+  } catch {
+    /* non-fatal */
+  }
+
+  return true;
+}
+
+async function _debugToolbarButtons(page: Page) {
+  try {
+    const buttons = await page.evaluate(() => {
+      const arr: any[] = [];
+      document.querySelectorAll('button, div[role="button"]').forEach((el) => {
+        const aria = (el.getAttribute("aria-label") || "").trim();
+        const jsname = el.getAttribute("jsname") || "";
+        const promo = el.getAttribute("data-promo-anchor-id") || "";
+        const text = (el.textContent || "").trim();
+        if (aria || text || jsname || promo) {
+          arr.push({
+            aria,
+            text,
+            jsname,
+            promo,
+            className: (el as HTMLElement).className,
+          });
+        }
+      });
+      return arr.slice(0, 25);
+    });
+    console.log("🧭 Toolbar candidates:", JSON.stringify(buttons, null, 2));
+  } catch {}
+}
+
+// --- Stop sharing (optional convenience) ---
+export async function stopPresentingInMeet(page: Page): Promise<boolean> {
+  await _controlsVisible(page);
+  const stopped =
+    (await _clickOneOf(page, [
+      'button[aria-label*="Stop presenting"]',
+      'button[aria-label*="提示を停止"]',
+    ])) ||
+    // Some layouts put it under the Present menu again
+    (await (async () => {
+      const opened = await _clickOneOf(page, [
+        'button[aria-label*="Present"]',
+        'div[aria-label*="Present"]',
+        'button[aria-label*="提示"]',
+        'div[aria-label*="提示"]',
+      ]);
+      if (!opened) return false;
+      return _clickMenuItemByText(page, ["Stop presenting", "提示を停止"]);
+    })());
+  if (stopped) console.log("🛑 Stopped presenting.");
+  return !!stopped;
 }
