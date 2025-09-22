@@ -8,3 +8,7 @@ recordings/
 debug_output.wav
 *.pem
 .DS_Store
+.venv/
+venv/
+__pycache__/
+*.py[cod]
