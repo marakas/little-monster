@@ -10,6 +10,10 @@ import { PassThrough } from "stream";
 import { getScenario } from "./scenarios/index.ts";
 import type { Phase } from "./scenarios/types.ts";
 
+const REALTIME_MODEL =
+  process.env.REALTIME_MODEL ?? "gpt-4o-mini-realtime-preview";
+const TRANSCRIBE_MODEL =
+  process.env.TRANSCRIBE_MODEL ?? "gpt-4o-mini-transcribe";
 const DEFAULT_LANGUAGE = process.env.INTERVIEW_LANG ?? "en-US";
 const DEFAULT_VOICE = process.env.INTERVIEW_VOICE ?? "alloy"; // any valid realtime voice
 
@@ -111,13 +115,12 @@ const agent = new RealtimeAgent({
 
 export const wsSession = new RealtimeSession(agent, {
   transport: "websocket",
-  //model: "gpt-4o-realtime-preview-2025-06-03",
-  model: "gpt-realtime",
+  model: REALTIME_MODEL,
   config: {
     inputAudioFormat: "pcm16",
     outputAudioFormat: "pcm16",
     inputAudioTranscription: {
-      model: "gpt-4o-transcribe",
+      model: TRANSCRIBE_MODEL,
       language: "en",
     },
     turnDetection: {
