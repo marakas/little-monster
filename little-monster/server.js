@@ -54,9 +54,27 @@ const q = {
   lessonRequestsForUser: db.query(`
     SELECT * FROM lesson_requests WHERE user_id = ? ORDER BY created_at DESC
   `),
+
   lessonsForUser: db.query(`
     SELECT * FROM lessons WHERE user_id = ? ORDER BY created_at DESC
   `),
+
+  lessonById: db.query(`SELECT * FROM lessons WHERE id = ?`),
+  latestLessonForUser: db.query(`
+    SELECT * FROM lessons WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
+  `),
+  unitsForLesson: db.query(
+    `SELECT * FROM lesson_units WHERE lesson_id = ? ORDER BY created_at`
+  ),
+  vocabForUnit: db.query(
+    `SELECT * FROM vocab_items WHERE unit_id = ? ORDER BY created_at`
+  ),
+  speakingForUnit: db.query(
+    `SELECT * FROM speaking_items WHERE unit_id = ? ORDER BY created_at`
+  ),
+  turnsForUnit: db.query(
+    `SELECT * FROM conversation_turns WHERE unit_id = ? ORDER BY order_index`
+  ),
 };
 
 // ---------- app ----------
@@ -251,6 +269,53 @@ app.get("/dashboard", async (c) => {
     error: null,
     success: null,
   });
+});
+
+async function loadLessonJSON(lesson) {
+  const units = q.unitsForLesson.all(lesson.id);
+  const result = { lesson, units: [] };
+
+  for (const u of units) {
+    if (u.type === "vocab") {
+      result.units.push({
+        ...u,
+        items: q.vocabForUnit.all(u.id),
+      });
+    } else if (u.type === "speaking") {
+      result.units.push({
+        ...u,
+        items: q.speakingForUnit.all(u.id),
+      });
+    } else if (u.type === "conversation") {
+      result.units.push({
+        ...u,
+        turns: q.turnsForUnit.all(u.id),
+      });
+    }
+  }
+  return result;
+}
+
+// Latest lesson for the logged-in user
+app.get("/api/lessons/latest", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "unauthorized" }, 401);
+  const lesson = q.latestLessonForUser.get(user.id);
+  if (!lesson) return c.json({ lesson: null });
+  const json = await loadLessonJSON(lesson);
+  return c.json(json);
+});
+
+// Fetch by id (only if it belongs to current user)
+app.get("/api/lessons/:id", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "unauthorized" }, 401);
+  const id = c.req.param("id");
+  const lesson = q.lessonById.get(id);
+  if (!lesson || lesson.user_id !== user.id)
+    return c.json({ error: "not found" }, 404);
+  const json = await loadLessonJSON(lesson);
+  return c.json(json);
 });
 
 app.notFound((c) => {
