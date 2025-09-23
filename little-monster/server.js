@@ -75,10 +75,53 @@ const q = {
   turnsForUnit: db.query(
     `SELECT * FROM conversation_turns WHERE unit_id = ? ORDER BY order_index`
   ),
+
+  userById: db.query("SELECT * FROM users WHERE id = ?"),
 };
 
 // ---------- app ----------
 const app = new Hono();
+
+// --- helpers ---
+function getBearer(c) {
+  const h = c.req.header("authorization") || "";
+  const m = /^Bearer\s+(.+)$/i.exec(h);
+  return m ? m[1] : null;
+}
+
+// Allow either: (a) logged-in cookie user, or (b) service key.
+async function requireApiAuth(c, next) {
+  const user = c.get("user");
+  if (user) return next(); // browser session is fine
+
+  const key = c.req.header("x-api-key") || getBearer(c);
+  if (
+    key &&
+    process.env.INTERNAL_API_KEY &&
+    key === process.env.INTERNAL_API_KEY
+  ) {
+    c.set("service", "internal");
+    return next();
+  }
+
+  return c.json({ error: "unauthorized" }, 401);
+}
+
+// Resolve a "target user" for service calls (by id OR email).
+function resolveTargetUser(c) {
+  const svc = c.get("service");
+  if (!svc) return c.get("user"); // cookie user path
+
+  const id = c.req.query("user_id");
+  const email = (c.req.query("email") || "").toLowerCase();
+  let u = null;
+  if (id) {
+    u = q.userById?.get ? q.userById.get(id) : null;
+  } else if (email) {
+    u = q.userByEmail.get(email);
+  }
+  return u;
+}
 
 app.use("*", logger());
 
@@ -296,23 +339,28 @@ async function loadLessonJSON(lesson) {
   return result;
 }
 
-// Latest lesson for the logged-in user
+// ADD authentication to the api routes
+app.use("/api/*", requireApiAuth);
+
+// Latest lesson (for cookie user OR service calling with ?user_id=... / ?email=...)
 app.get("/api/lessons/latest", async (c) => {
-  const user = c.get("user");
-  if (!user) return c.json({ error: "unauthorized" }, 401);
-  const lesson = q.latestLessonForUser.get(user.id);
+  const target = resolveTargetUser(c);
+  if (!target) return c.json({ error: "not found" }, 404);
+
+  const lesson = q.latestLessonForUser.get(target.id);
   if (!lesson) return c.json({ lesson: null });
   const json = await loadLessonJSON(lesson);
   return c.json(json);
 });
 
-// Fetch by id (only if it belongs to current user)
+// Fetch by id (service must also own user context)
 app.get("/api/lessons/:id", async (c) => {
-  const user = c.get("user");
-  if (!user) return c.json({ error: "unauthorized" }, 401);
+  const target = resolveTargetUser(c);
+  if (!target) return c.json({ error: "not found" }, 404);
+
   const id = c.req.param("id");
   const lesson = q.lessonById.get(id);
-  if (!lesson || lesson.user_id !== user.id)
+  if (!lesson || lesson.user_id !== target.id)
     return c.json({ error: "not found" }, 404);
   const json = await loadLessonJSON(lesson);
   return c.json(json);

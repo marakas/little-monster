@@ -46,8 +46,51 @@ export function onRealtimeEvent(cb: (ev: any) => void) {
   (wsSession.on as any)("event", cb);
 }
 
-//export const PHASES = ["intro", "whiteboard_gate", "interview"] as const;
-//export type Phase = (typeof PHASES)[number];
+export async function closeRealtime() {
+  // Disarm auto replies and clear any pending buffers/responses first.
+  try {
+    setRealtimeArmed(false);
+  } catch {}
+  try {
+    wsSession.transport.sendEvent({ type: "response.cancel" });
+  } catch {}
+  try {
+    wsSession.transport.sendEvent({ type: "input_audio_buffer.clear" });
+  } catch {}
+
+  // Best-effort close the session (supports both modern and older SDKs)
+  try {
+    const s: any = wsSession as any;
+    if (typeof s.close === "function") {
+      s.close(); // current SDKs
+    } else if (typeof s.disconnect === "function") {
+      await s.disconnect(); // some examples/older builds
+    }
+  } catch (e) {
+    console.warn(
+      "[RTC] closeRealtime(): session close failed:",
+      (e as any)?.message || e
+    );
+  }
+
+  // Reset local state so the next unit can reopen a clean session.
+  try {
+    agentSpeaking = false;
+    waitingForTranscript = false;
+    resetCommitBudget();
+
+    if (speakingTimer) {
+      clearTimeout(speakingTimer);
+      speakingTimer = null;
+    }
+    if (transcriptFallbackTimer) {
+      clearTimeout(transcriptFallbackTimer);
+      transcriptFallbackTimer = null;
+    }
+  } catch {}
+
+  console.log("[RTC] Realtime session closed and local state reset.");
+}
 
 export function setRealtimeArmed(on: boolean) {
   realtimeArmed = on;
