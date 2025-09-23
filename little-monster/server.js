@@ -35,12 +35,27 @@ const q = {
   insertUser: db.query(
     "INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)"
   ),
+
   createLessonRequest: db.query(`
     INSERT INTO lesson_requests (id, user_id, level, focus, notes, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `),
+
+  // new:
+  createLesson: db.query(`
+    INSERT INTO lessons (id, user_id, level, focus, notes, status, created_at)
+    VALUES (?, ?, ?, ?, ?, 'preparing', ?)
+  `),
+  enqueueJob: db.query(`
+    INSERT INTO generation_jobs (id, user_id, lesson_id, payload_json, status, created_at)
+    VALUES (?, ?, ?, ?, 'pending', ?)
+  `),
+
   lessonRequestsForUser: db.query(`
     SELECT * FROM lesson_requests WHERE user_id = ? ORDER BY created_at DESC
+  `),
+  lessonsForUser: db.query(`
+    SELECT * FROM lessons WHERE user_id = ? ORDER BY created_at DESC
   `),
 };
 
@@ -195,6 +210,22 @@ app.post("/register", async (c) => {
     new Date().toISOString()
   );
 
+  // Create a lesson record in 'preparing' state
+  const lessonId = nanoid();
+  q.createLesson.run(
+    lessonId,
+    userId,
+    level,
+    focus,
+    notes,
+    new Date().toISOString()
+  );
+
+  // Enqueue a generation job containing the request context
+  const jobId = nanoid();
+  const payload = JSON.stringify({ userId, level, focus, notes, email });
+  q.enqueueJob.run(jobId, userId, lessonId, payload, new Date().toISOString());
+
   const token = await createSession({ sub: userId, email });
   setCookie(c, "lm_session", token, {
     path: "/",
@@ -211,10 +242,12 @@ app.get("/dashboard", async (c) => {
   const user = c.get("user");
   if (!user) return c.redirect("/login");
   const lessons = q.lessonRequestsForUser.all(user.id);
+  const generated = q.lessonsForUser.all(user.id);
   return tpl(c, "dashboard", {
     title: "Dashboard",
     user,
     lessons,
+    generated, // actual generated lessons
     error: null,
     success: null,
   });
