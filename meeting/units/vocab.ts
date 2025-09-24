@@ -9,6 +9,7 @@ import {
   setRealtimeArmed,
 } from "../realtimeClient.ts";
 import { buildUnitInstructions } from "../lessons/prompt.ts";
+import type { IUnitRunner } from "./base.ts";
 
 export const VocabRunner: IUnitRunner = {
   type: "vocab",
