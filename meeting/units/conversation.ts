@@ -1,12 +1,10 @@
-// units/conversation.ts
-import type { IUnitRunner } from "./base.ts";
-import type { UnitContext, UnitRunOptions } from "./base.ts";
+import type { IUnitRunner, UnitContext, UnitRunOptions } from "./base.ts";
 import type { LessonUnit } from "../lessons/types.ts";
-import { setOverlay, setPhase } from "../realtimeClient.ts";
 import {
   openRealtimeSession,
   closeRealtimeSession,
 } from "../sessions/realtimeSession.ts";
+import { updateInstructions, speakOnce } from "../realtimeClient.ts";
 
 const STEP_MS = 75_000;
 
@@ -20,30 +18,38 @@ export const ConversationRunner: IUnitRunner = {
     const start = Date.now();
     const until = start + opts.maxDurationMs;
 
-    setPhase("conversation" as any);
-    if (unit.intro_text)
-      setOverlay(`📞 Conversation\n\n${unit.intro_text}`, 120_000);
+    if (opts.useRealtime) {
+      await openRealtimeSession();
+      await updateInstructions(
+        "You are the 'bot' side of a short Japanese phone call with a customer. " +
+          "Follow the script turns. Keep responses brief and polite. If the learner speaks, respond naturally."
+      );
+    }
 
-    if (opts.useRealtime) await openRealtimeSession();
+    speakOnce(
+      unit.intro_text ||
+        "Let's simulate a short customer phone call in Japanese."
+    );
 
     const turns = (unit.turns ?? []).sort(
       (a, b) => a.order_index - b.order_index
     );
     let idx = 0;
-    let nextAt = Date.now() + 1000;
+    let nextAt = Date.now() + 1500;
 
     while (Date.now() < until && (!opts.signal || !opts.signal.aborted)) {
       if (Date.now() >= nextAt) {
         const t = turns[idx];
         if (t) {
-          const who = t.speaker === "bot" ? "🟢 Bot" : "🟣 You";
-          setOverlay(`${who}: ${t.jp}\n${t.en}`, 90_000);
+          if (t.speaker === "bot") {
+            speakOnce(t.jp);
+          } else {
+            // user turn: gently prompt them to speak that line
+            speakOnce(`Your turn: ${t.jp}`);
+          }
           idx = (idx + 1) % Math.max(turns.length, 1);
         } else {
-          setOverlay(
-            "会話スクリプトがありません。自由会話にしましょう。",
-            60_000
-          );
+          speakOnce("Let's continue the conversation naturally.");
         }
         nextAt = Date.now() + STEP_MS;
       }

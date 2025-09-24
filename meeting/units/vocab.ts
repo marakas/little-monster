@@ -1,13 +1,10 @@
-// units/vocab.ts
-import type { IUnitRunner } from "./base.ts";
-import type { UnitContext, UnitRunOptions } from "./base.ts";
-
+import type { IUnitRunner, UnitContext, UnitRunOptions } from "./base.ts";
 import type { LessonUnit } from "../lessons/types.ts";
-import { setOverlay, setPhase } from "../realtimeClient.ts";
 import {
   openRealtimeSession,
   closeRealtimeSession,
 } from "../sessions/realtimeSession.ts";
+import { updateInstructions, speakOnce } from "../realtimeClient.ts";
 
 const STEP_MS = 60_000;
 
@@ -21,26 +18,33 @@ export const VocabRunner: IUnitRunner = {
     const start = Date.now();
     const until = start + opts.maxDurationMs;
 
-    setPhase("vocab" as any);
-    if (unit.intro_text)
-      setOverlay(`📚 Vocabulary\n\n${unit.intro_text}`, 120_000);
+    if (opts.useRealtime) {
+      await openRealtimeSession();
+      await updateInstructions(
+        "You are a polite Japanese instructor teaching keigo vocabulary for customer calls. " +
+          "Keep your speech short (under 10 seconds). For each item, say the Japanese term, then a brief English gloss, then a short example in Japanese."
+      );
+    }
 
-    if (opts.useRealtime) await openRealtimeSession();
+    if (unit.intro_text) {
+      speakOnce(`Lesson section: vocabulary. ${unit.intro_text}`);
+    } else {
+      speakOnce("We will practice polite keigo vocabulary for customer calls.");
+    }
 
     const items = unit.items ?? [];
     let i = 0;
-    let nextAt = Date.now() + 1000;
+    let nextAt = Date.now() + 1500;
 
     while (Date.now() < until && (!opts.signal || !opts.signal.aborted)) {
       if (Date.now() >= nextAt) {
         const it = items[i];
         if (it) {
-          const desc = it.description ? `\n${it.description}` : "";
-          const ex = it.example_jp ? `\n例: ${it.example_jp}` : "";
-          setOverlay(`【単語】${it.jp} — ${it.en}${desc}${ex}`, 90_000);
+          const ex = it.example_jp ? ` Example: ${it.example_jp}` : "";
+          speakOnce(`${it.jp}. ${it.en}.${ex}`);
           i = (i + 1) % items.length;
         } else {
-          setOverlay("語彙リストがありません。自由練習にしましょう。", 60_000);
+          speakOnce("No vocabulary items provided. Let's do free practice.");
         }
         nextAt = Date.now() + STEP_MS;
       }

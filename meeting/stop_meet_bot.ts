@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { stopScreencastCapture } from "./visual_screencast.ts";
-import type { ControlAction, ControlEvent } from "./control/control.schema.ts";
 
 import AWS from "aws-sdk";
 
@@ -53,7 +52,6 @@ export async function stopMeetBot(reason = "manual") {
 
   state.isClosing = true; // **Set flag to prevent duplicate stops**
   // ask for final report first
-  await requestEndReport(reason);
   // ✅ **Stop all monitoring immediately** by setting isBotRunning to false early
   console.log("🛑 Stopping all monitoring functions...");
   state.isBotRunning = false;
@@ -210,39 +208,6 @@ export async function stopMeetBot(reason = "manual") {
       state.heartbeatInterval = null;
     }
   }
-}
-
-async function requestEndReport(reason: string): Promise<void> {
-  const worker = state.controlWorker;
-  if (!worker) return;
-
-  // Wait for END_REPORT or timeout
-  await new Promise<void>((resolve) => {
-    let done = false;
-    const timer = setTimeout(() => {
-      if (!done) resolve();
-    }, 3000); // 3s budget; adjust if you like
-
-    const onMsg = (msg: ControlAction) => {
-      if (msg?.type === "END_REPORT") {
-        done = true;
-        clearTimeout(timer);
-        worker.off("message", onMsg);
-        resolve();
-      }
-    };
-
-    worker.on("message", onMsg);
-
-    const evt: ControlEvent = { type: "SESSION_END", reason };
-    try {
-      worker.postMessage(evt);
-    } catch {
-      clearTimeout(timer);
-      worker.off("message", onMsg);
-      resolve();
-    }
-  });
 }
 
 // New helper to upload a file to S3

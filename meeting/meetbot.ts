@@ -5,33 +5,25 @@ import * as fsp from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-
 import { fetchLessonOrThrow } from "./lessons/api.ts";
 import {
   runLessonOrchestrated,
   bindLessonForPick,
 } from "./engine/lessonOrchestrator.ts";
-
 import {
   startScreencastCapture,
   getScreenshotDir,
 } from "./visual_screencast.ts";
-
 import {
   initRealtime,
   onRealtimeAudio,
   setRealtimeArmed,
   clearInputBuffer,
 } from "./realtimeClient.ts";
-
 import { audioCapture } from "./audioCapture.ts";
-
 import { writeWavFile } from "./upsample.ts";
-
 import { onRealtimeEvent } from "./realtimeClient.ts";
-
 import { launch } from "puppeteer-stream";
-
 import { MEET_BOT_MAX_DURATION } from "./constants.ts";
 import { env } from "./env.ts";
 import state, { waitUntilJoined, resetAudioMux } from "./state.ts";
@@ -43,7 +35,6 @@ import {
   transformZoomUrl,
   type MeetingPlatform,
 } from "./utils.ts";
-
 import {
   joinGoogleMeet,
   clickMeetGotIt,
@@ -52,7 +43,6 @@ import {
 import { enableStreamingMic } from "./micStreaming.ts";
 
 const VISION_ENABLED = process.env.VISION_ENABLED === "1";
-
 let rollingTranscript = "";
 let latestScreenshotPath: string | null = null;
 
