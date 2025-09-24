@@ -1,3 +1,4 @@
+//lessons/context.ts
 import type { LessonResponse } from "./types.ts";
 
 let currentLesson: LessonResponse | null = null;

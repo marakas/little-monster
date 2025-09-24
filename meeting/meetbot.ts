@@ -11,15 +11,20 @@ import {
   bindLessonForPick,
 } from "./engine/lessonOrchestrator.ts";
 import {
+  openRealtimeSession,
+  closeRealtimeSession,
+} from "./sessions/realtimeSession.ts";
+import {
   startScreencastCapture,
   getScreenshotDir,
 } from "./visual_screencast.ts";
 import {
-  initRealtime,
+  speakOnce,
   onRealtimeAudio,
   setRealtimeArmed,
   clearInputBuffer,
 } from "./realtimeClient.ts";
+
 import { audioCapture } from "./audioCapture.ts";
 import { writeWavFile } from "./upsample.ts";
 import { onRealtimeEvent } from "./realtimeClient.ts";
@@ -157,7 +162,6 @@ export async function startMeetBot(
       state.muxWatchdog = null;
     }
 
-    await initRealtime(process.env.OPENAI_API_KEY!);
 
     let lastTtsAt = 0;
     // Subscribe to Realtime events (transcripts, etc.)
@@ -554,6 +558,11 @@ export async function startMeetBot(
         setRealtimeArmed(true);
       }
     });
+
+    await openRealtimeSession("You are a concise, polite instructor.");
+    speakOnce("Audio path check. One, two, three.");
+    await new Promise((r) => setTimeout(r, 3000));
+    await closeRealtimeSession();
 
     await runLessonOrchestrated(state.page!, lesson, {
       meetingId,

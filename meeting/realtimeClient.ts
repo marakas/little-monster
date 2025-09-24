@@ -16,7 +16,6 @@ let wsSession: RealtimeSession | null = null;
 let agent: RealtimeAgent | null = null;
 
 let agentSpeaking = false;
-let audioListenerBound = false;
 let realtimeArmed = false;
 
 // ---------- Public status ----------
@@ -73,10 +72,7 @@ export async function initRealtime(
 
   bindSessionEvents(wsSession);
 
-  if (!audioListenerBound) {
-    wsSession.on("audio", (event) => playCb?.(event.data));
-    audioListenerBound = true;
-  }
+  wsSession.on("audio", (event) => playCb?.(event.data));
 
   await wsSession.connect({ apiKey });
 

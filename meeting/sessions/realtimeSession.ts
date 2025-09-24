@@ -1,18 +1,15 @@
-// sessions/realtimeSession.ts
+//sessions/realtimeSessions.ts
 import {
   initRealtime,
   setRealtimeArmed,
   clearInputBuffer,
+  closeRealtime,
 } from "../realtimeClient.ts";
 
-// If not present yet, add this in realtimeClient.ts and export it:
-// export async function closeRealtime() { try { await client?.close?.(); } catch {} }
-import { closeRealtime } from "../realtimeClient.ts";
-
-export async function openRealtimeSession() {
-  await initRealtime(process.env.OPENAI_API_KEY!);
+export async function openRealtimeSession(baseInstructions?: string) {
+  await initRealtime(process.env.OPENAI_API_KEY!, { baseInstructions });
   setRealtimeArmed(true);
-  clearInputBuffer();
+  clearInputBuffer(); // once at start
 }
 
 export async function closeRealtimeSession() {

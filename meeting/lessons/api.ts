@@ -55,5 +55,6 @@ export async function fetchLessonOrThrow(
   if (!data.lesson?.id || data.lesson.status !== "ready") {
     throw new Error("Lesson not ready or invalid");
   }
+  console.log("LESSON DATA RECEIVED: ", data);
   return data;
 }
