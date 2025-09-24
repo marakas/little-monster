@@ -8,7 +8,11 @@ import {
   openRealtimeSession,
   closeRealtimeSession,
 } from "../sessions/realtimeSession.ts";
-import { updateInstructions, speakOnce } from "../realtimeClient.ts";
+import {
+  updateInstructions,
+  speakOnce,
+  speakOnceAndWait,
+} from "../realtimeClient.ts";
 
 export type OrchestratorOptions = {
   meetingId: string;
@@ -116,4 +120,28 @@ async function sleep(ms: number, signal?: AbortSignal) {
       { once: true }
     );
   });
+}
+
+export async function runKickoff(lesson, plan) {
+  // base guardrail: do not improvise, just say what we send
+  const base = [
+    "ROLE: Polite Japanese instructor for telephone keigo.",
+    "SYSTEM: Do not initiate freeform conversation. Only speak when a response is created.",
+    "Keep each utterance under 8 seconds.",
+  ].join("\n");
+
+  await openRealtimeSession(base);
+  const minutes = (ms: number) => Math.round(ms / 60000);
+  await speakOnceAndWait(
+    `Hello! Today’s focus is ${
+      lesson.lesson.focus
+    }. We'll spend about ${minutes(
+      plan.vocabMs
+    )} minutes on vocabulary, ${minutes(
+      plan.speakingMs
+    )} on speaking, and ${minutes(
+      plan.conversationMs
+    )} on a short conversation. Let's begin.`
+  );
+  await closeRealtimeSession();
 }

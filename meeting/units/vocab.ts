@@ -1,55 +1,60 @@
-//units/vocab.ts
-import type { IUnitRunner, UnitContext, UnitRunOptions } from "./base.ts";
-import type { LessonUnit } from "../lessons/types.ts";
+// units/vocab.ts
 import {
   openRealtimeSession,
   closeRealtimeSession,
 } from "../sessions/realtimeSession.ts";
-import { updateInstructions, speakOnce } from "../realtimeClient.ts";
-
-const STEP_MS = 60_000;
+import {
+  updateInstructions,
+  speakOnceAndWait,
+  setRealtimeArmed,
+} from "../realtimeClient.ts";
+import { buildUnitInstructions } from "../lessons/prompt.ts";
 
 export const VocabRunner: IUnitRunner = {
   type: "vocab",
-  async run(
-    ctx: UnitContext,
-    unit: LessonUnit,
-    opts: UnitRunOptions
-  ): Promise<void> {
-    const start = Date.now();
-    const until = start + opts.maxDurationMs;
+  async run(ctx, unit, opts) {
+    const until = Date.now() + opts.maxDurationMs;
 
     if (opts.useRealtime) {
-      await openRealtimeSession();
-      await updateInstructions(
-        "You are a polite Japanese instructor teaching keigo vocabulary for customer calls. " +
-          "Keep your speech short (under 10 seconds). For each item, say the Japanese term, then a brief English gloss, then a short example in Japanese."
-      );
+      const base = buildUnitInstructions(ctx.lesson, unit);
+      await openRealtimeSession(base);
+      await updateInstructions(base);
+      setRealtimeArmed(false); // ✅ stay scripted
     }
 
-    if (unit.intro_text) {
-      speakOnce(`Lesson section: vocabulary. ${unit.intro_text}`);
-    } else {
-      speakOnce("We will practice polite keigo vocabulary for customer calls.");
-    }
+    await speakOnceAndWait(
+      unit.intro_text
+        ? `Vocabulary section. ${unit.intro_text}`
+        : "Vocabulary section. We’ll practice polite keigo words for customer calls."
+    );
 
     const items = unit.items ?? [];
     let i = 0;
-    let nextAt = Date.now() + 1500;
+    const STEP_MS = 60000;
 
     while (Date.now() < until && (!opts.signal || !opts.signal.aborted)) {
-      if (Date.now() >= nextAt) {
-        const it = items[i];
-        if (it) {
-          const ex = it.example_jp ? ` Example: ${it.example_jp}` : "";
-          speakOnce(`${it.jp}. ${it.en}.${ex}`);
-          i = (i + 1) % items.length;
-        } else {
-          speakOnce("No vocabulary items provided. Let's do free practice.");
-        }
-        nextAt = Date.now() + STEP_MS;
+      const it = items[i];
+      if (!it) {
+        await speakOnceAndWait(
+          "No vocabulary items were provided for this lesson."
+        );
+        break;
       }
-      await new Promise((r) => setTimeout(r, 250));
+
+      await speakOnceAndWait(
+        `${it.jp}. ${it.en}.${
+          it.example_jp ? ` Example: ${it.example_jp}` : ""
+        }`
+      );
+
+      i = (i + 1) % items.length;
+
+      // pacing gap between items
+      const pauseUntil = Date.now() + STEP_MS;
+      while (Date.now() < pauseUntil) {
+        await new Promise((r) => setTimeout(r, 200));
+        if (opts.signal?.aborted) break;
+      }
     }
 
     if (opts.useRealtime) await closeRealtimeSession();

@@ -162,7 +162,6 @@ export async function startMeetBot(
       state.muxWatchdog = null;
     }
 
-
     let lastTtsAt = 0;
     // Subscribe to Realtime events (transcripts, etc.)
     onRealtimeEvent((ev: any) => {
@@ -539,30 +538,10 @@ export async function startMeetBot(
       presenting ? "✅ Presenting detected" : "⚠️ Presenting not detected"
     );
 
-    setRealtimeArmed(true); // now safe to allow auto turns
-    clearInputBuffer(); // first clear (pre-greeting)
-    let greetingPending = true;
-
-    // Hook into the existing session event stream you already subscribed to
-    onRealtimeEvent((ev: any) => {
-      // when the manual greeting finishes, arm auto-turns
-      if (
-        greetingPending &&
-        (ev.type === "response.completed" ||
-          ev.type === "response.failed" ||
-          ev.type === "response.canceled")
-      ) {
-        greetingPending = false;
-        clearInputBuffer();
-        // NOW let the SDK manage turns and barge-in
-        setRealtimeArmed(true);
-      }
-    });
-
-    await openRealtimeSession("You are a concise, polite instructor.");
-    speakOnce("Audio path check. One, two, three.");
-    await new Promise((r) => setTimeout(r, 3000));
-    await closeRealtimeSession();
+    // await openRealtimeSession("You are a concise, polite instructor.");
+    // speakOnce("Audio path check. One, two, three.");
+    // await new Promise((r) => setTimeout(r, 3000));
+    // await closeRealtimeSession();
 
     await runLessonOrchestrated(state.page!, lesson, {
       meetingId,

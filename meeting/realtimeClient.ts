@@ -5,6 +5,8 @@ import { PassThrough } from "stream";
 import { RealtimeAgent, RealtimeSession } from "@openai/agents/realtime";
 
 ffmpeg.setFfmpegPath(ffmpegPath!);
+let responseInFlight = false;
+let turnWaiters: Array<() => void> = [];
 
 const REALTIME_MODEL =
   process.env.REALTIME_MODEL ?? "gpt-4o-mini-realtime-preview";
@@ -17,6 +19,13 @@ let agent: RealtimeAgent | null = null;
 
 let agentSpeaking = false;
 let realtimeArmed = false;
+
+const PROMPT_DEBUG = process.env.PROMPT_DEBUG === "1";
+function logPrompt(kind: string, text?: string) {
+  if (!PROMPT_DEBUG) return;
+  const flat = (text ?? "").trim();
+  console.log(`[PROMPT][${kind}] ${flat || "(empty)"}`);
+}
 
 // ---------- Public status ----------
 export function isAgentSpeaking() {
@@ -31,6 +40,24 @@ type AnyEvent = any;
 const eventListeners = new Set<(ev: AnyEvent) => void>();
 export function onRealtimeEvent(cb: (ev: AnyEvent) => void) {
   eventListeners.add(cb);
+}
+
+export function waitForResponseDone(timeoutMs = 15000): Promise<void> {
+  if (!responseInFlight) return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, timeoutMs);
+    turnWaiters.push(() => {
+      clearTimeout(t);
+      resolve();
+    });
+  });
+}
+
+export async function speakOnceAndWait(instructions?: string) {
+  speakOnce(instructions);
+  // Mark in-flight in case events arrive late
+  responseInFlight = true;
+  await waitForResponseDone();
 }
 
 // Audio out (tts from model)
@@ -81,7 +108,7 @@ export async function initRealtime(
     opts?.baseInstructions ?? "",
     opts?.voice ?? DEFAULT_VOICE
   );
-
+  logPrompt("init.base", opts?.baseInstructions);
   // Always start disarmed; unit code decides when to arm
   setRealtimeArmed(false);
 }
@@ -121,6 +148,7 @@ export async function closeRealtime() {
 // ---------- Session updates ----------
 export async function updateInstructions(text: string, voice?: string) {
   if (!wsSession) return;
+  logPrompt("session.update", text);
   wsSession.transport.sendEvent({
     type: "session.update",
     session: {
@@ -150,6 +178,7 @@ export function setRealtimeArmed(on: boolean) {
 // request a one-shot model turn (tts+text)
 export function speakOnce(instructions?: string) {
   if (!wsSession) return;
+  logPrompt("response.create", instructions);
   wsSession.transport.sendEvent({
     type: "response.create",
     response: {
@@ -275,9 +304,9 @@ function bufferToArrayBuffer(buf: Buffer): ArrayBuffer {
 
 function bindSessionEvents(s: RealtimeSession) {
   (s.on as any)("event", (ev: AnyEvent) => {
-    // model speech lifecycle
     if (ev?.type === "response.created") {
       agentSpeaking = true;
+      responseInFlight = true;
     }
     if (
       ev?.type === "response.completed" ||
@@ -285,7 +314,15 @@ function bindSessionEvents(s: RealtimeSession) {
       ev?.type === "response.canceled"
     ) {
       agentSpeaking = false;
+      responseInFlight = false;
+      const ws = turnWaiters.splice(0);
+      ws.forEach((fn) => {
+        try {
+          fn();
+        } catch {}
+      });
     }
+
     eventListeners.forEach((cb) => {
       try {
         cb(ev);
