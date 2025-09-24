@@ -42,6 +42,10 @@ export function onRealtimeEvent(cb: (ev: AnyEvent) => void) {
   eventListeners.add(cb);
 }
 
+export function offRealtimeEvent(cb: (ev: AnyEvent) => void) {
+  eventListeners.delete(cb);
+}
+
 export function waitForResponseDone(timeoutMs = 15000): Promise<void> {
   if (!responseInFlight) return Promise.resolve();
   return new Promise((resolve) => {
@@ -185,6 +189,46 @@ export function speakOnce(instructions?: string) {
       modalities: ["audio", "text"],
       ...(instructions ? { instructions } : {}),
     },
+  });
+}
+
+export async function waitForUserAck({
+  timeoutMs = 6000,
+}: { timeoutMs?: number } = {}) {
+  return new Promise<"ok" | "no" | "timeout">((resolve) => {
+    let done = false;
+
+    const finish = (val: "ok" | "no" | "timeout") => {
+      if (done) return;
+      done = true;
+      try {
+        setRealtimeArmed(false);
+      } catch {}
+      offRealtimeEvent(handler);
+      resolve(val);
+    };
+
+    const timer = setTimeout(() => finish("timeout"), timeoutMs);
+
+    const handler = (ev: AnyEvent) => {
+      if (
+        ev?.type === "input_audio_transcription.completed" &&
+        ev?.transcript
+      ) {
+        const t = String(ev.transcript).toLowerCase();
+        if (/\b(yes|yeah|yep|ok|okay|sounds good|sure|let'?s go)\b/i.test(t)) {
+          clearTimeout(timer);
+          finish("ok");
+        } else if (/\b(no|nah|not now|later)\b/i.test(t)) {
+          clearTimeout(timer);
+          finish("no");
+        }
+      }
+    };
+
+    onRealtimeEvent(handler);
+    // arm only during the gate window
+    setRealtimeArmed(true);
   });
 }
 

@@ -6,25 +6,12 @@ import { mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fetchLessonOrThrow } from "./lessons/api.ts";
-import {
-  runLessonOrchestrated,
-  bindLessonForPick,
-} from "./engine/lessonOrchestrator.ts";
-import {
-  openRealtimeSession,
-  closeRealtimeSession,
-} from "./sessions/realtimeSession.ts";
+import { runLessonOrchestrated } from "./engine/lessonOrchestrator.ts";
 import {
   startScreencastCapture,
   getScreenshotDir,
 } from "./visual_screencast.ts";
-import {
-  speakOnce,
-  onRealtimeAudio,
-  setRealtimeArmed,
-  clearInputBuffer,
-} from "./realtimeClient.ts";
-
+import { onRealtimeAudio } from "./realtimeClient.ts";
 import { audioCapture } from "./audioCapture.ts";
 import { writeWavFile } from "./upsample.ts";
 import { onRealtimeEvent } from "./realtimeClient.ts";
@@ -138,7 +125,6 @@ export async function startMeetBot(
 
     // ✅ Fetch lesson up front (fail fast)
     const lesson = await fetchLessonOrThrow(lessonId, { userId });
-    bindLessonForPick(lesson);
 
     // ✅ Transform Zoom URLs to standard format if needed
     const transformedMeetUrl = transformZoomUrl(meetUrl);
