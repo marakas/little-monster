@@ -6,15 +6,53 @@ import {
 import { speakOnce, updateInstructions } from "../realtimeClient.ts";
 import type { LessonResponse } from "../lessons/types.ts";
 
+function titleCase(s: string) {
+  return s.replace(/\w\S*/g, (w) => w[0].toUpperCase() + w.slice(1));
+}
+
 function mins(ms: number) {
   return Math.round(ms / 60000);
+}
+
+function cleanNotes(notes?: string) {
+  if (!notes) return "";
+  let n = notes.trim();
+  // strip common “requesty” prefixes
+  n = n
+    .replace(/^i (?:would like to|want to|want a|would like a)\s*/i, "")
+    .replace(/^(?:please|make it|let's do)\s*/i, "")
+    .replace(/\bclass\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  // lowercase first if it’s sentence-ish
+  if (/^[A-Z]/.test(n) && !/[.!?]$/.test(n))
+    n = n[0].toLowerCase() + n.slice(1);
+  return n;
+}
+
+function prettyFocus(lesson: LessonResponse) {
+  const raw = (lesson.lesson.focus || "").trim().toLowerCase();
+  // map a few known internal tags → friendly label
+  const map: Record<string, string> = {
+    intro: "polite phone introductions (keigo)",
+    keigo: "polite Japanese (keigo)",
+    calls: "keigo for customer calls",
+  };
+  if (map[raw]) return map[raw];
+
+  // fallbacks: turn "phone_support" → "Phone Support"
+  if (raw) return titleCase(raw.replace(/[_-]+/g, " "));
+
+  // last resort: cleaned notes if available
+  const n = cleanNotes(lesson.lesson.notes);
+  return n || "today’s objectives";
 }
 
 function buildKickoffMonologue(
   lesson: LessonResponse,
   durs: { vocabMs: number; speakingMs: number; conversationMs: number }
 ) {
-  const focus = lesson.lesson.focus || "today's focus";
+  const focus = prettyFocus(lesson);
   return [
     `Hello and welcome to today's lesson.`,
     `Our focus is ${focus}.`,
