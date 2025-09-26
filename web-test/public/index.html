@@ -9,7 +9,7 @@
         --bg: #0b0c10;
         --fg: #eaf0f6;
         --card: #12131a;
-        --line: #1c1e27;
+        --line: #1a1e27;
         --muted: #a8b3c7;
       }
       body {
@@ -135,8 +135,8 @@
           <div>
             <label>Transcription language</label>
             <select id="lang">
+              <option value="en" selected>English (en)</option>
               <option value="ja">Japanese (ja)</option>
-              <option value="en">English (en)</option>
             </select>
           </div>
         </div>
@@ -175,27 +175,38 @@
     </div>
 
     <script type="module">
-      // NOTE: We’ll load the SDK from esm.run to avoid bundlers.
+      const BASE_EN_POLICY = [
+        "LANGUAGE POLICY:",
+        "• Speak in **English** for all narration, instructions, scaffolding, and prompts.",
+        "• Use **Japanese only** when quoting the lesson’s `jp` strings (vocabulary items or jp example lines).",
+        "• Do **not** answer in Spanish or any language other than English unless you are quoting a `jp` string.",
+        "",
+        "BEHAVIOR:",
+        "• Keep each turn under 8 seconds.",
+        "• Do not invent content; stick to the lesson data.",
+      ].join("\n");
       import {
         RealtimeAgent,
         RealtimeSession,
+        OpenAIRealtimeWebRTC,
       } from "https://esm.run/@openai/agents-realtime";
 
-      // ------------- UI helpers -------------
+      // -------- UI helpers --------
       const $ = (s) => document.querySelector(s);
       const statusEl = $("#status"),
         armedEl = $("#armed"),
         speakEl = $("#speak"),
         logEl = $("#log");
       const log = (...a) => {
-        logEl.textContent +=
-          a
-            .map((x) => (typeof x === "string" ? x : JSON.stringify(x)))
-            .join(" ") + "\\n";
+        const line = a
+          .map((x) => (typeof x === "string" ? x : JSON.stringify(x)))
+          .join(" ");
+        console.log(line);
+        logEl.textContent += line + "\n"; // <-- real newline
         logEl.scrollTop = logEl.scrollHeight;
       };
 
-      // ------------- Realtime glue (no shared modules) -------------
+      // -------- Realtime glue --------
       let session = null;
       let responseInFlight = false;
       let agentSpeaking = false;
@@ -230,26 +241,44 @@
       async function connectRealtime() {
         if (session) return;
 
-        // Get ephemeral token from our tiny server
         const lang = $("#lang").value;
+
+        // 1) Mint ephemeral key
         const tokResp = await fetch("/realtime/token", { method: "POST" });
         if (!tokResp.ok) throw new Error(await tokResp.text());
-        const tok = await tokResp.json(); // { value: "ek_..." }
+        const tok = await tokResp.json();
         const ek = tok.value;
 
-        // Ask the browser for mic access early so the UX is clear
-        await navigator.mediaDevices.getUserMedia({ audio: true });
+        // 2) Mic + audio element
+        const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const audioEl = document.createElement("audio");
+        audioEl.autoplay = true;
+        audioEl.playsInline = true;
+        audioEl.controls = true;
+        audioEl.muted = false;
+        audioEl.volume = 1.0;
+        document.body.appendChild(audioEl);
+        try {
+          if (audioEl.setSinkId) await audioEl.setSinkId("default");
+        } catch {}
+        audioEl.addEventListener("playing", () => log("[audio] playing"));
+        audioEl.addEventListener("pause", () => log("[audio] paused"));
+        audioEl.addEventListener("error", (e) =>
+          log("[audio] error", e?.message || e)
+        );
 
-        // Build agent + session — in the browser this uses WebRTC automatically
+        // 3) Session + transport
         const agent = new RealtimeAgent({
           name: "Instructor",
           instructions: "",
         });
-        session = new RealtimeSession(agent, {
-          // (browser) default transport is WebRTC; no extra config needed here
+        const transport = new OpenAIRealtimeWebRTC({
+          mediaStream: mic,
+          audioElement: audioEl,
         });
+        session = new RealtimeSession(agent, { transport });
 
-        // Wire generic event stream (mirrors your Node client)
+        // 4) Model events
         session.on("event", (ev) => {
           if (ev?.type === "response.created") {
             agentSpeaking = true;
@@ -265,17 +294,48 @@
             responseInFlight = false;
             speakEl.textContent = "tts: idle";
           }
-          // Pass through to "unit" listeners
+          if (ev?.type) log("[event]", ev.type);
           listeners.forEach((cb) => {
             try {
               cb(ev);
             } catch {}
           });
         });
+        // Also hook specific ones for visibility
+        session.on("response.failed", (e) =>
+          log("[response.failed]", e?.error?.message || JSON.stringify(e))
+        );
+        session.on("input_audio_transcription.completed", (e) =>
+          log("[asr]", e?.transcript)
+        );
 
-        await session.connect({ apiKey: ek }); // <- ephemeral client key
+        // 5) Transport/WebRTC visibility + attach remote track if needed
+        session.transport.on("*", (ev) =>
+          log("[transport]", ev?.type || JSON.stringify(ev))
+        );
+        try {
+          const pc = session.transport.pc;
+          if (pc) {
+            pc.onconnectionstatechange = () =>
+              log("[pc] state:", pc.connectionState);
+            pc.oniceconnectionstatechange = () =>
+              log("[pc] ice:", pc.iceConnectionState);
+            pc.ontrack = (e) => {
+              log("[pc] ontrack:", e.track?.kind);
+              if (e.streams && e.streams[0]) {
+                audioEl.srcObject = e.streams[0];
+                audioEl
+                  .play()
+                  .catch((err) =>
+                    log("[audio] play() error:", err?.message || err)
+                  );
+              }
+            };
+          }
+        } catch {}
 
-        // Initial session settings (ASR on, speaking off)
+        // 6) Connect and configure
+        await session.connect({ apiKey: ek });
         session.transport.sendEvent({
           type: "session.update",
           session: {
@@ -290,11 +350,18 @@
               create_response: false,
               interrupt_response: true,
             },
+            instructions: BASE_EN_POLICY,
           },
         });
 
         statusEl.textContent = "status: connected";
         log("Connected to Realtime via WebRTC.");
+
+        // 7) Immediate audible check
+        try {
+          await audioEl.play();
+        } catch {}
+        speakOnce("Audio path check. One, two, three.");
       }
 
       function updateInstructions(text, voice) {
@@ -302,7 +369,7 @@
         session.transport.sendEvent({
           type: "session.update",
           session: {
-            ...(text ? { instructions: text } : {}),
+            instructions: [BASE_EN_POLICY, text || ""].join("\n\n").trim(),
             ...(voice ? { voice } : {}),
           },
         });
@@ -323,13 +390,6 @@
         if (!responseInFlight) return Promise.resolve();
         return new Promise((resolve) => {
           let done = false;
-          const timer = setTimeout(() => {
-            if (!done) {
-              done = true;
-              offEvent(handler);
-              resolve();
-            }
-          }, timeoutMs);
           const handler = (ev) => {
             if (
               ev?.type === "response.completed" ||
@@ -338,12 +398,18 @@
             ) {
               if (done) return;
               done = true;
-              clearTimeout(timer);
               offEvent(handler);
               resolve();
             }
           };
           onEvent(handler);
+          setTimeout(() => {
+            if (!done) {
+              done = true;
+              offEvent(handler);
+              resolve();
+            }
+          }, timeoutMs);
         });
       }
 
@@ -363,22 +429,21 @@
             setArmed(false);
             resolve(txt);
           };
-          const timer = setTimeout(() => finish(null), timeoutMs);
           const handler = (ev) => {
             if (
               ev?.type === "input_audio_transcription.completed" &&
               ev?.transcript
             ) {
-              clearTimeout(timer);
               finish(String(ev.transcript));
             }
           };
           onEvent(handler);
-          setArmed(true); // arm only during the listen window
+          setArmed(true);
+          setTimeout(() => finish(null), timeoutMs);
         });
       }
 
-      // ------------- Orchestrator (from scratch, compact) -------------
+      // -------- Orchestrator --------
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
       function prettyFocus(lesson) {
@@ -407,7 +472,7 @@
             "- Do NOT ask questions.",
             "- Speak only when a response is created.",
             "Keep each utterance under 8 seconds.",
-          ].join("\\n")
+          ].join("\n")
         );
         const mins = (ms) => Math.round(ms / 60000);
         const line = [
@@ -434,7 +499,7 @@
             "- Keep each instructor turn under 8 seconds.",
             "- Do not invent new content; use only the unit data.",
             "- Do not move to the next section on your own.",
-          ].join("\\n")
+          ].join("\n")
         );
         const items = unit.items || [];
         let i = 0;
@@ -449,9 +514,7 @@
           await speakOnceAndWait(`Please repeat: "${it.jp}".`);
           const heard = await waitForUserSpeech({ timeoutMs: 6500 });
           log("[vocab] user said:", heard);
-          if (it.example_jp) {
-            await speakOnceAndWait(it.example_jp);
-          }
+          if (it.example_jp) await speakOnceAndWait(it.example_jp);
           await sleep(200);
           i = (i + 1) % Math.max(1, items.length);
         }
@@ -463,7 +526,7 @@
             "ROLE: Instructor for Japanese telephone keigo.",
             "INSTRUCTOR_LANGUAGE: English only; target line in Japanese.",
             "CONSTRAINTS: Keep each turn under 8s. Do not add new content.",
-          ].join("\\n")
+          ].join("\n")
         );
         await speakOnceAndWait(
           "Speaking practice. I will name a phrase in Japanese with a quick English gloss, then please say it."
@@ -494,7 +557,7 @@
             "FLOW: Scripted role-play. Read only lines where speaker=bot (in JP).",
             "After each bot line, wait briefly for the user.",
             "If silence: one short English hint, then repeat once.",
-          ].join("\\n")
+          ].join("\n")
         );
         const turns = unit.turns || [];
         if (!turns.length) {
@@ -538,7 +601,6 @@
           log("[orchestrator] SKIP_INTRO=true → jumping straight to units");
         }
 
-        // Units
         const plan = [
           {
             kind: "vocab",
@@ -570,7 +632,6 @@
           await sleep(200);
         }
 
-        // Wrap
         updateInstructions("Keep it short and polite.");
         await speakOnceAndWait(
           "Great work today. This concludes our mini lesson. See you next time."
@@ -578,7 +639,7 @@
         await sleep(durations.wrapMs);
       }
 
-      // ------------- UI -------------
+      // -------- UI --------
       const aborter = { ctrl: null };
 
       function setRunning(on) {
