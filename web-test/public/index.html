@@ -175,6 +175,8 @@
     </div>
 
     <script type="module">
+      let mic = null;
+      let audioEl = null;
       const BASE_EN_POLICY = [
         "LANGUAGE POLICY:",
         "• Speak in **English** for all narration, instructions, scaffolding, and prompts.",
@@ -213,45 +215,11 @@
       let realtimeArmed = false;
       const listeners = new Set();
 
-      function setArmed(on) {
-        realtimeArmed = on;
-        if (!session) return;
-        session.transport.sendEvent({
-          type: "session.update",
-          session: {
-            turn_detection: {
-              type: "semantic_vad",
-              eagerness: "high",
-              create_response: on,
-              interrupt_response: true,
-            },
-          },
-        });
-        armedEl.textContent = on ? "mic: ARMED" : "mic: disarmed";
-        log(on ? "[RTC] ARMED" : "[RTC] DISARMED");
-      }
+      async function prepareMic() {
+        if (mic && audioEl) return; // already prepared
+        mic = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      function onEvent(cb) {
-        listeners.add(cb);
-      }
-      function offEvent(cb) {
-        listeners.delete(cb);
-      }
-
-      async function connectRealtime() {
-        if (session) return;
-
-        const lang = $("#lang").value;
-
-        // 1) Mint ephemeral key
-        const tokResp = await fetch("/realtime/token", { method: "POST" });
-        if (!tokResp.ok) throw new Error(await tokResp.text());
-        const tok = await tokResp.json();
-        const ek = tok.value;
-
-        // 2) Mic + audio element
-        const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const audioEl = document.createElement("audio");
+        audioEl = document.createElement("audio");
         audioEl.autoplay = true;
         audioEl.playsInline = true;
         audioEl.controls = true;
@@ -267,7 +235,46 @@
           log("[audio] error", e?.message || e)
         );
 
-        // 3) Session + transport
+        window.__micReady = true;
+        log("Mic prepared (no AI connection yet).");
+      }
+      function setArmed(on) {
+        realtimeArmed = on;
+        if (!session) return;
+        session.transport.sendEvent({
+          type: "session.update",
+          session: {
+            turn_detection: {
+              type: "semantic_vad",
+              eagerness: "high",
+              // IMPORTANT: never let the model auto-create replies on VAD
+              create_response: false,
+              interrupt_response: true,
+            },
+          },
+        });
+        armedEl.textContent = on ? "mic: ARMED" : "mic: disarmed";
+        log(on ? "[RTC] ARMED" : "[RTC] DISARMED");
+      }
+
+      function onEvent(cb) {
+        listeners.add(cb);
+      }
+      function offEvent(cb) {
+        listeners.delete(cb);
+      }
+
+      async function startRealtimeSession() {
+        if (session) return; // don’t double-connect
+        if (!mic || !audioEl) await prepareMic();
+
+        const lang = $("#lang").value;
+
+        // Mint token only when lesson starts
+        const tokResp = await fetch("/realtime/token", { method: "POST" });
+        if (!tokResp.ok) throw new Error(await tokResp.text());
+        const { value: ek } = await tokResp.json();
+
         const agent = new RealtimeAgent({
           name: "Instructor",
           instructions: "",
@@ -278,7 +285,7 @@
         });
         session = new RealtimeSession(agent, { transport });
 
-        // 4) Model events
+        // Events (same as you had)
         session.on("event", (ev) => {
           if (ev?.type === "response.created") {
             agentSpeaking = true;
@@ -301,18 +308,20 @@
             } catch {}
           });
         });
-        // Also hook specific ones for visibility
         session.on("response.failed", (e) =>
           log("[response.failed]", e?.error?.message || JSON.stringify(e))
         );
         session.on("input_audio_transcription.completed", (e) =>
           log("[asr]", e?.transcript)
         );
+        session.transport.on("*", (ev) => {
+          if (ev?.type === "error") {
+            log("[transport error]", ev?.error?.message || JSON.stringify(ev));
+          } else {
+            log("[transport]", ev?.type || JSON.stringify(ev));
+          }
+        });
 
-        // 5) Transport/WebRTC visibility + attach remote track if needed
-        session.transport.on("*", (ev) =>
-          log("[transport]", ev?.type || JSON.stringify(ev))
-        );
         try {
           const pc = session.transport.pc;
           if (pc) {
@@ -334,15 +343,16 @@
           }
         } catch {}
 
-        // 6) Connect and configure
         await session.connect({ apiKey: ek });
+
+        // Configure: ASR on, VAD no auto response, English policy
         session.transport.sendEvent({
           type: "session.update",
           session: {
-            voice: window.INTERVIEW_VOICE || "alloy",
-            input_audio_transcription: {
-              model: "gpt-4o-mini-transcribe",
-              language: lang,
+            type: "realtime",
+            model: "gpt-4o-mini-transcribe",
+            audio: {
+              voice: window.INTERVIEW_VOICE || "alloy",
             },
             turn_detection: {
               type: "semantic_vad",
@@ -355,13 +365,7 @@
         });
 
         statusEl.textContent = "status: connected";
-        log("Connected to Realtime via WebRTC.");
-
-        // 7) Immediate audible check
-        try {
-          await audioEl.play();
-        } catch {}
-        speakOnce("Audio path check. One, two, three.");
+        log("Realtime session ready (awaiting lesson start).");
       }
 
       function updateInstructions(text, voice) {
@@ -369,6 +373,7 @@
         session.transport.sendEvent({
           type: "session.update",
           session: {
+            type: "realtime",
             instructions: [BASE_EN_POLICY, text || ""].join("\n\n").trim(),
             ...(voice ? { voice } : {}),
           },
@@ -377,13 +382,14 @@
 
       function speakOnce(instructions) {
         if (!session) return;
+        // 1) apply utterance guidance at session level
+        const final = [BASE_EN_POLICY, instructions || ""].join("\n\n").trim();
         session.transport.sendEvent({
-          type: "response.create",
-          response: {
-            modalities: ["audio", "text"],
-            ...(instructions ? { instructions } : {}),
-          },
+          type: "session.update",
+          session: { type: "realtime", instructions: final },
         });
+        // 2) trigger a response (no extra fields)
+        session.transport.sendEvent({ type: "response.create" });
       }
 
       function waitForResponseDone(timeoutMs = 15000) {
@@ -643,12 +649,12 @@
       const aborter = { ctrl: null };
 
       function setRunning(on) {
-        $("#start").disabled = on ? true : !window.__connected;
+        $("#start").disabled = on ? true : !window.__micReady;
         $("#stop").disabled = !on;
         $("#connect").disabled = on;
         statusEl.textContent = on
           ? "status: running"
-          : window.__connected
+          : window.__micReady
           ? "status: ready"
           : "status: idle";
       }
@@ -726,13 +732,13 @@
 
       $("#connect").addEventListener("click", async () => {
         try {
-          await connectRealtime();
-          window.__connected = true;
+          await prepareMic(); // <-- no Realtime here
+          window.__micReady = true;
           setRunning(false);
-          log("Mic ready, ASR configured.");
+          log("Mic ready (no AI connection yet).");
         } catch (e) {
-          log("Connect failed:", e?.message || e);
-          alert("Connect failed. See console.");
+          log("Mic prep failed:", e?.message || e);
+          alert("Mic prep failed. See console.");
         }
       });
 
@@ -760,6 +766,7 @@
         log("== START LESSON ==");
 
         try {
+          await startRealtimeSession();
           await runLesson(lesson, opts, aborter.ctrl);
           log("== LESSON COMPLETE ==");
         } catch (e) {
