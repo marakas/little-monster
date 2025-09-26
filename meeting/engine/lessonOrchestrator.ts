@@ -19,6 +19,7 @@ type OrchestratorOptions = {
   wrapMs?: number;
   signal?: AbortSignal;
   introOnly?: boolean;
+  skipIntro?: boolean;
 };
 
 export async function runLessonOrchestrated(
@@ -39,17 +40,29 @@ export async function runLessonOrchestrated(
     conversationMs: opts.conversationMs ?? 5 * 60_000,
   };
 
-  // 🔹 Kickoff (event-driven: speak → short “ok?” gate → proceed)
-  await runKickoff(lesson, durations, { ackTimeoutMs: 6000 });
+  const SKIP_INTRO = opts.skipIntro ?? process.env.SKIP_INTRO === "1";
+  const INTRO_ONLY = opts.introOnly || process.env.INTRO_ONLY === "1";
 
-  await new Promise((r) => setTimeout(r, 250));
-
-  if (opts.introOnly || process.env.INTRO_ONLY === "1") {
-    console.log("[orchestrator] introOnly=true → skipping units and wrap");
-    return;
+  if (SKIP_INTRO && INTRO_ONLY) {
+    console.warn(
+      "[orchestrator] Both SKIP_INTRO and INTRO_ONLY set; honoring SKIP_INTRO (run units, no intro)."
+    );
   }
 
-  // 🔹 Units
+  // Kickoff (only if not skipping)
+  if (!SKIP_INTRO) {
+    // NOTE: if your runKickoff signature no longer takes opts, remove the extra arg:
+    await runKickoff(lesson, durations);
+    await new Promise((r) => setTimeout(r, 250)); // micro-gap
+    if (INTRO_ONLY) {
+      console.log("[orchestrator] introOnly=true → skipping units and wrap");
+      return;
+    }
+  } else {
+    console.log("[orchestrator] SKIP_INTRO=true → jumping straight to units");
+  }
+
+  // Units
   const plan: Array<{
     unit?: LessonUnit;
     kind: "vocab" | "speaking" | "conversation";
@@ -86,10 +99,10 @@ export async function runLessonOrchestrated(
       useRealtime: step.useRealtime,
       signal: opts.signal,
     });
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 250)); // micro-gap between units
   }
 
-  // 🔹 Wrap (short, scripted)
+  // Wrap
   await openRealtimeSession("Keep it short and polite.");
   await updateInstructions(
     "You are a polite Japanese instructor. Keep it short."

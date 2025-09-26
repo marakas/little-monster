@@ -536,6 +536,8 @@ export async function startMeetBot(
       speakingMs: 5 * 60_000,
       conversationMs: 5 * 60_000,
       wrapMs: 30_000,
+      skipIntro: process.env.SKIP_INTRO === "1",
+      introOnly: process.env.INTRO_ONLY === "1",
     });
 
     // ✅ **Auto-stop the bot after the maximum duration**
