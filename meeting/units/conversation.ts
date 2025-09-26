@@ -1,17 +1,17 @@
 // units/conversation.ts
-import type { IUnitRunner, UnitContext, UnitRunOptions } from "./base.ts";
-import type { LessonUnit } from "../lessons/types.ts";
+import type { IUnitRunner } from "./base.ts";
 import {
   openRealtimeSession,
   closeRealtimeSession,
 } from "../sessions/realtimeSession.ts";
 import {
-  updateInstructions,
   speakOnceAndWait,
   setRealtimeArmed,
-  clearInputBuffer,
+  drainTtsPlayback,
 } from "../realtimeClient.ts";
 import { buildUnitInstructions } from "../lessons/prompt.ts";
+
+const USER_WAIT_MS = 7000;
 
 export const ConversationRunner: IUnitRunner = {
   type: "conversation",
@@ -19,37 +19,31 @@ export const ConversationRunner: IUnitRunner = {
     const until = Date.now() + opts.maxDurationMs;
     const turns = unit.turns ?? [];
 
-    if (opts.useRealtime) {
-      const base = buildUnitInstructions(ctx.lesson, unit);
-      await openRealtimeSession(base);
-      await updateInstructions(base);
-      setRealtimeArmed(false); // start scripted
-    }
+    const base = buildUnitInstructions(ctx.lesson, unit);
+    await openRealtimeSession(base);
+    setRealtimeArmed(false); // scripted bot lines only
 
     await speakOnceAndWait(
-      unit.intro_text
-        ? `Conversation practice. ${unit.intro_text}`
-        : "Conversation practice. I’ll be the staff; you are the customer."
+      "Conversation practice. I’ll speak the staff lines in Japanese. Please reply briefly as the customer."
     );
-
-    if (opts.useRealtime) {
-      clearInputBuffer();
-      setRealtimeArmed(true); // ✅ now listen and respond to the user
-    }
+    await drainTtsPlayback(200);
 
     for (const t of turns) {
       if (Date.now() >= until || opts.signal?.aborted) break;
 
       if (t.speaker === "bot") {
-        // Send bot line, wait until it finishes
-        await speakOnceAndWait(t.jp);
+        await speakOnceAndWait(t.jp); // JP line
+        await drainTtsPlayback(150);
       } else {
-        // user turn → just wait a bit; the armed session will answer if needed
-        // (or you can key off ASR events and timing)
-        await new Promise((r) => setTimeout(r, 2500));
+        // User time window (we do not speak back here)
+        const waitUntil = Date.now() + USER_WAIT_MS;
+        while (Date.now() < waitUntil) {
+          if (opts.signal?.aborted) break;
+          await new Promise((r) => setTimeout(r, 120));
+        }
       }
     }
 
-    if (opts.useRealtime) await closeRealtimeSession();
+    await closeRealtimeSession();
   },
 };

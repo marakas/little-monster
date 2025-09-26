@@ -3,7 +3,12 @@ import {
   openRealtimeSession,
   closeRealtimeSession,
 } from "../sessions/realtimeSession.ts";
-import { speakOnce, updateInstructions } from "../realtimeClient.ts";
+import {
+  speakOnce,
+  updateInstructions,
+  speakOnceAndWait,
+  drainTtsPlayback,
+} from "../realtimeClient.ts";
 import type { LessonResponse } from "../lessons/types.ts";
 
 function titleCase(s: string) {
@@ -87,10 +92,10 @@ export async function runKickoff(
 
   const line = buildKickoffMonologue(lesson, durs);
 
-  // One-shot, deterministic line
-  speakOnce(`Speak exactly this line and nothing else: "${line}"`);
+  // One-shot, deterministic line — wait for the model to finish speaking
+  await speakOnceAndWait(`Speak exactly this line and nothing else: "${line}"`);
 
-  // Give TTS time to play, then close session (still DISARMED)
-  await new Promise((r) => setTimeout(r, opts?.sleepMs ?? 6000));
+  // Let the audio queue flush to Meet, then close (still DISARMED)
+  await drainTtsPlayback(350);
   await closeRealtimeSession();
 }

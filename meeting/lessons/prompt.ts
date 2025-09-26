@@ -1,4 +1,3 @@
-//lessons/prompt.ts
 import type { LessonResponse, LessonUnit } from "./types.ts";
 
 export function buildUnitInstructions(
@@ -6,17 +5,18 @@ export function buildUnitInstructions(
   unit: LessonUnit
 ): string {
   const hdr = [
-    `ROLE: Polite Japanese instructor for telephone keigo.`,
+    `ROLE: Instructor for Japanese telephone keigo.`,
+    `INSTRUCTOR_LANGUAGE: English only for explanations and prompts.`,
+    `TARGET_LANGUAGE: Use Japanese only for the target term/phrase itself and any provided JP example lines.`,
     `LEVEL: ${lesson.lesson.level}`,
     `FOCUS: ${lesson.lesson.focus}`,
     lesson.lesson.notes ? `NOTES: ${lesson.lesson.notes}` : "",
     `CURRENT_UNIT: ${unit.type}`,
     ``,
     `CONSTRAINTS:`,
-    `- Speak only within CURRENT_UNIT content.`,
-    `- Keep each utterance under 8 seconds.`,
-    `- Use English only for quick glosses; otherwise Japanese.`,
-    `- Do not start the next section on your own.`,
+    `- Keep each instructor turn under 8 seconds.`,
+    `- Do not invent new content; use only the unit data.`,
+    `- Do not move to the next section on your own.`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -29,11 +29,15 @@ export function buildUnitInstructions(
       )
       .join("\n");
     const flow = [
-      `FLOW (scripted):`,
-      `1) Say "Vocabulary section" in 1 sentence.`,
-      `2) For each item: JP term → short EN gloss → short JP example.`,
-      `3) Brief pause between items.`,
-      `4) No extra drills or new topics.`,
+      `FLOW (per item, strict):`,
+      `1) English explain: say "${
+        unit.type === "vocab" ? "Vocabulary" : "Item"
+      }: <JP> means <EN>."`,
+      `2) Pronunciation drill (English prompt): "Please repeat '<JP>'."`,
+      `   - Listen without replying.`,
+      `   - If silence: one short English nudge, then move on.`,
+      `3) Context line: speak the provided JP example once.`,
+      `4) Then proceed to the next item.`,
     ].join("\n");
     return [hdr, flow, `ITEMS:\n${items}`].join("\n\n");
   }
@@ -43,10 +47,9 @@ export function buildUnitInstructions(
       .map((i) => `- ${i.jp} — ${i.en}`)
       .join("\n");
     const flow = [
-      `FLOW (interactive):`,
-      `- Prompt the learner to say the target phrase.`,
-      `- If close, give one short correction and a single repeat.`,
-      `- Keep turns short; stay on unit items.`,
+      `FLOW (repeat & brief listen):`,
+      `- English prompt: "Please say '<JP>' (which means '<EN>')."`,
+      `- Listen without replying; if silence, one English nudge and continue.`,
     ].join("\n");
     return [hdr, flow, `TARGETS:\n${items}`].join("\n\n");
   }
@@ -56,11 +59,10 @@ export function buildUnitInstructions(
       .map((t) => `${t.speaker.toUpperCase()}: ${t.jp}`)
       .join("\n");
     const flow = [
-      `FLOW (guided role-play):`,
-      `- Speak only the lines where speaker=bot, in order.`,
-      `- Wait for the user after each bot line.`,
-      `- If silence/confusion: 1-sentence hint and repeat the same line once.`,
-      `- Do not change scenes or add topics.`,
+      `FLOW (scripted role-play):`,
+      `- Read only the lines where speaker=bot (in JP).`,
+      `- After each bot line, wait briefly for user.`,
+      `- If silence: one short English hint, then repeat the same line once.`,
     ].join("\n");
     return [hdr, flow, `SCRIPT:\n${turns}`].join("\n\n");
   }

@@ -192,6 +192,35 @@ export function speakOnce(instructions?: string) {
   });
 }
 
+export async function drainTtsPlayback(quietMs = 900) {
+  await new Promise((r) => setTimeout(r, quietMs));
+}
+
+export function waitForResponseEnd(timeoutMs = 30000): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const handler = (ev: any) => {
+      if (
+        ev?.type === "response.completed" ||
+        ev?.type === "response.failed" ||
+        ev?.type === "response.canceled"
+      ) {
+        if (done) return;
+        done = true;
+        eventListeners.delete(handler);
+        resolve();
+      }
+    };
+    eventListeners.add(handler);
+    setTimeout(() => {
+      if (done) return;
+      done = true;
+      eventListeners.delete(handler);
+      resolve();
+    }, timeoutMs);
+  });
+}
+
 export async function waitForUserAck({
   timeoutMs = 6000,
 }: { timeoutMs?: number } = {}) {
@@ -229,6 +258,39 @@ export async function waitForUserAck({
     onRealtimeEvent(handler);
     // arm only during the gate window
     setRealtimeArmed(true);
+  });
+}
+
+export function waitForUserSpeech({
+  timeoutMs = 8000,
+}: { timeoutMs?: number } = {}) {
+  return new Promise<string | null>((resolve) => {
+    let done = false;
+    const finish = (txt: string | null) => {
+      if (done) return;
+      done = true;
+      offRealtimeEvent(handler);
+      // keep session DISARMED; this helper does not arm the model
+      resolve(txt);
+    };
+
+    const timer = setTimeout(() => finish(null), timeoutMs);
+
+    const handler = (ev: any) => {
+      if (
+        ev?.type === "input_audio_transcription.completed" &&
+        ev?.transcript
+      ) {
+        clearTimeout(timer);
+        // First transcript wins; we don't evaluate correctness here
+        finish(String(ev.transcript));
+      }
+    };
+
+    onRealtimeEvent(handler);
+    // NOTE: This works with create_response=false because ASR is enabled.
+    // If your backend stopped emitting transcripts while DISARMED, you can
+    // temporarily arm with a "do not speak" instruction—but keep it off unless needed.
   });
 }
 

@@ -41,6 +41,9 @@ export async function runLessonOrchestrated(
 
   // 🔹 Kickoff (event-driven: speak → short “ok?” gate → proceed)
   await runKickoff(lesson, durations, { ackTimeoutMs: 6000 });
+
+  await new Promise((r) => setTimeout(r, 250));
+
   if (opts.introOnly || process.env.INTRO_ONLY === "1") {
     console.log("[orchestrator] introOnly=true → skipping units and wrap");
     return;
@@ -83,6 +86,7 @@ export async function runLessonOrchestrated(
       useRealtime: step.useRealtime,
       signal: opts.signal,
     });
+    await new Promise((r) => setTimeout(r, 250));
   }
 
   // 🔹 Wrap (short, scripted)
