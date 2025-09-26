@@ -1,9 +1,0 @@
-{
-  "name": "@meetbot/control-worker",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "openai": "^5.16.0",
-    "zod": "^3.25.7"
-  }
-}

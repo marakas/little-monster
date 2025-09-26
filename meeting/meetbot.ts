@@ -5,31 +5,17 @@ import * as fsp from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
-
+import { fetchLessonOrThrow } from "./lessons/api.ts";
+import { runLessonOrchestrated } from "./engine/lessonOrchestrator.ts";
 import {
   startScreencastCapture,
   getScreenshotDir,
 } from "./visual_screencast.ts";
-
-import {
-  initRealtime,
-  onRealtimeAudio,
-  setRealtimeArmed,
-  clearInputBuffer,
-} from "./realtimeClient.ts";
-
+import { onRealtimeAudio } from "./realtimeClient.ts";
 import { audioCapture } from "./audioCapture.ts";
-
 import { writeWavFile } from "./upsample.ts";
-
-import {
-  startPhasedInterview,
-  registerAssessmentProvider,
-  onRealtimeEvent,
-} from "./realtimeClient.ts";
-
+import { onRealtimeEvent } from "./realtimeClient.ts";
 import { launch } from "puppeteer-stream";
-
 import { MEET_BOT_MAX_DURATION } from "./constants.ts";
 import { env } from "./env.ts";
 import state, { waitUntilJoined, resetAudioMux } from "./state.ts";
@@ -41,23 +27,14 @@ import {
   transformZoomUrl,
   type MeetingPlatform,
 } from "./utils.ts";
-
 import {
   joinGoogleMeet,
   clickMeetGotIt,
   presentChromeTabInMeet,
 } from "./platforms/joinGoogleMeet.ts";
 import { enableStreamingMic } from "./micStreaming.ts";
-import { Worker } from "node:worker_threads";
-import { setOverlay, setPhase, type Phase } from "./realtimeClient.ts";
-import type { ControlAction, ControlEvent } from "./control/control.schema.ts";
 
 const VISION_ENABLED = process.env.VISION_ENABLED === "1";
-
-let latestRubricReport:
-  | import("./control/control.schema.js").RubricReport
-  | null = null;
-
 let rollingTranscript = "";
 let latestScreenshotPath: string | null = null;
 
@@ -89,19 +66,6 @@ async function waitForOutboundReady() {
   await warmOutboundOnce(); // ensure sender path is hot before first TTS
 }
 
-function resolveControlWorkerPath(): string {
-  // If you ever add a build step later, this will prefer dist JS.
-  const candidates = [
-    path.resolve(process.cwd(), "dist", "control", "control.worker.js"),
-    path.resolve(process.cwd(), "control", "control.worker.ts"),
-    path.resolve(process.cwd(), "control", "control.worker.js"),
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  throw new Error("control worker not found (tried dist/*.js and source *.ts)");
-}
-
 function appendTranscript(line: string) {
   if (!line) return;
   rollingTranscript += (rollingTranscript ? "\n" : "") + line.trim();
@@ -126,6 +90,8 @@ function chunkHasVoice16k(ab: ArrayBuffer): boolean {
 export async function startMeetBot(
   meetUrl: string,
   meetingId: string,
+  lessonId: string,
+  userId: string,
   platform?: MeetingPlatform
 ) {
   if (state.isBotRunning || state.meetingId === meetingId) {
@@ -143,11 +109,22 @@ export async function startMeetBot(
       return { status: "error", message: "Meeting ID is required" };
     }
 
+    if (!lessonId || !lessonId.trim()) {
+      return { status: "error", message: "lessonId is required" };
+    }
+
+    if (!userId || !userId.trim()) {
+      return { status: "error", message: "userId is required" };
+    }
+
     // ✅ Validate meetUrl parameter
     if (!meetUrl || typeof meetUrl !== "string" || meetUrl.trim() === "") {
       console.error("❌ Missing or invalid meetUrl! Cannot proceed.");
       return { status: "error", message: "Valid meeting URL is required" };
     }
+
+    // ✅ Fetch lesson up front (fail fast)
+    const lesson = await fetchLessonOrThrow(lessonId, { userId });
 
     // ✅ Transform Zoom URLs to standard format if needed
     const transformedMeetUrl = transformZoomUrl(meetUrl);
@@ -161,24 +138,6 @@ export async function startMeetBot(
       return { status: "error", message: "Unsupported meeting platform" };
     }
 
-    registerAssessmentProvider(async () => {
-      // Surface the worker’s latest rubric to the tool
-      if (!latestRubricReport) {
-        return { ok: true, live: null };
-      }
-      const live = {
-        scores: (latestRubricReport.scores || []).map((s) => ({
-          category: s.label,
-          score: s.score,
-          comment: s.justification,
-        })),
-        top_gaps: latestRubricReport.top_gaps || [],
-        suggested_next_question:
-          latestRubricReport.suggested_next_question || undefined,
-      };
-      return { ok: true, live };
-    });
-
     // ✅ Store platform in state for use across modules
     state.meetingPlatform = meetingPlatform;
 
@@ -189,61 +148,6 @@ export async function startMeetBot(
       state.muxWatchdog = null;
     }
 
-    await initRealtime(process.env.OPENAI_API_KEY!);
-
-    // --- Start Control Worker (simple proof-of-life overlay) ---
-    let controlWorker: Worker | null = null;
-    const postToWorker = (msg: ControlEvent) => {
-      try {
-        controlWorker?.postMessage(msg);
-      } catch (e) {}
-    };
-    try {
-      const workerPath = resolveControlWorkerPath();
-      controlWorker = new Worker(workerPath);
-      state.controlWorker = controlWorker;
-      controlWorker.on("message", (msg: ControlAction) => {
-        if (!msg || typeof msg !== "object") return;
-        switch (msg.type) {
-          case "SET_OVERLAY":
-            setOverlay(msg.text, msg.ttlMs);
-            break;
-          case "SET_PHASE":
-            // Coerce to Phase union used by realtimeClient
-            setPhase(msg.phase as Phase);
-            break;
-          case "RUBRIC_UPDATE":
-            latestRubricReport = msg.report;
-
-            try {
-              if (state.sessionDir) {
-                const p = path.join(state.sessionDir, "rubric.latest.json");
-                fs.writeFileSync(p, JSON.stringify(msg.report, null, 2));
-              }
-            } catch {}
-            break;
-          case "END_REPORT":
-            console.log("[control] END_REPORT received");
-            try {
-              if (state.sessionDir) {
-                const p = path.join(state.sessionDir, "rubric.final.json");
-                fs.writeFileSync(p, JSON.stringify(msg.report, null, 2));
-              }
-            } catch {}
-            break;
-        }
-      });
-      controlWorker.on("error", (e) =>
-        console.error("[control] worker error:", e)
-      );
-      controlWorker.on("exit", (code) =>
-        console.log("[control] worker exit:", code)
-      );
-      postToWorker({ type: "HELLO", meetingId });
-    } catch (e) {
-      console.warn("[control] failed to start worker:", e);
-    }
-
     let lastTtsAt = 0;
     // Subscribe to Realtime events (transcripts, etc.)
     onRealtimeEvent((ev: any) => {
@@ -252,11 +156,7 @@ export async function startMeetBot(
         ev?.transcript
       ) {
         appendTranscript(ev.transcript);
-        postToWorker({
-          type: "TRANSCRIPT_APPENDED",
-          ts: Date.now(),
-          text: String(ev.transcript || ""),
-        } as any);
+
         try {
           if (state.transcriptionLogPath) {
             fs.appendFileSync(state.transcriptionLogPath, ev.transcript + "\n");
@@ -488,11 +388,6 @@ export async function startMeetBot(
 
     console.log("📡 Bot is now listening to the meeting...");
 
-    // Lightweight periodic tick for the control worker
-    const tick = setInterval(() => {
-      postToWorker({ type: "TICK", ts: Date.now() });
-    }, 5_000);
-    state.stopTick = () => clearInterval(tick);
     if (VISION_ENABLED) {
       // dynamic import so we avoid pulling chokidar when off
       const { default: chokidar } = await import("chokidar");
@@ -543,12 +438,6 @@ export async function startMeetBot(
             return;
           }
           lastRun = now;
-
-          postToWorker({
-            type: "VISION_SNAPSHOT",
-            ts: Date.now(),
-            path: filePath,
-          });
         };
 
         watcher
@@ -635,26 +524,21 @@ export async function startMeetBot(
       presenting ? "✅ Presenting detected" : "⚠️ Presenting not detected"
     );
 
-    setRealtimeArmed(true); // now safe to allow auto turns
-    clearInputBuffer(); // first clear (pre-greeting)
-    let greetingPending = true;
+    // await openRealtimeSession("You are a concise, polite instructor.");
+    // speakOnce("Audio path check. One, two, three.");
+    // await new Promise((r) => setTimeout(r, 3000));
+    // await closeRealtimeSession();
 
-    // Hook into the existing session event stream you already subscribed to
-    onRealtimeEvent((ev: any) => {
-      // when the manual greeting finishes, arm auto-turns
-      if (
-        greetingPending &&
-        (ev.type === "response.completed" ||
-          ev.type === "response.failed" ||
-          ev.type === "response.canceled")
-      ) {
-        greetingPending = false;
-        clearInputBuffer();
-        // NOW let the SDK manage turns and barge-in
-        setRealtimeArmed(true);
-      }
+    await runLessonOrchestrated(state.page!, lesson, {
+      meetingId,
+      introMs: 60_000,
+      vocabMs: 5 * 60_000,
+      speakingMs: 5 * 60_000,
+      conversationMs: 5 * 60_000,
+      wrapMs: 30_000,
+      skipIntro: process.env.SKIP_INTRO === "1",
+      introOnly: process.env.INTRO_ONLY === "1",
     });
-    await startPhasedInterview(); // this calls speakOnce(...) for the greeting
 
     // ✅ **Auto-stop the bot after the maximum duration**
     state.stopTimeout = setTimeout(() => {
