@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Little Monster — Realtime Lesson Tester</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #0b0c10;
+        --fg: #eaf0f6;
+        --card: #12131a;
+        --line: #1c1e27;
+        --muted: #a8b3c7;
+      }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+          Inter, Helvetica, Arial;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      .wrap {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 20px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 22px;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      .row > * {
+        flex: 1 1 260px;
+      }
+      textarea,
+      input,
+      select,
+      button {
+        font: inherit;
+      }
+      textarea,
+      input[type="number"],
+      input[type="text"] {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid #2a2d3a;
+        background: #0e0f15;
+        color: var(--fg);
+      }
+      select {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid #2a2d3a;
+        background: #0e0f15;
+        color: var(--fg);
+      }
+      button {
+        padding: 10px 14px;
+        border-radius: 12px;
+        border: 1px solid #3a3f55;
+        background: #1a1e2b;
+        color: var(--fg);
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .pill {
+        display: inline-block;
+        font-size: 12px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        border: 1px solid #3a3f55;
+        background: #0e0f15;
+      }
+      .log {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        background: #0e0f15;
+        border: 1px solid #2a2d3a;
+        border-radius: 12px;
+        padding: 12px;
+        height: 240px;
+        overflow: auto;
+        white-space: pre-wrap;
+      }
+      label {
+        font-size: 12px;
+        display: block;
+        margin-bottom: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>🧪 Little Monster — Realtime Lesson Tester</h1>
+        <p class="muted">
+          No Meet/Zoom. Browser ↔ OpenAI Realtime (WebRTC). Full lesson flow
+          using OpenAI for speech + ASR.
+        </p>
+
+        <div class="row">
+          <div>
+            <label>Durations (sec): Vocab / Speaking / Conversation</label>
+            <div class="row" style="margin: 0">
+              <input id="vocabS" type="number" value="60" min="10" />
+              <input id="speakS" type="number" value="60" min="10" />
+              <input id="convS" type="number" value="60" min="10" />
+            </div>
+          </div>
+          <div>
+            <label>Skip / Intro only</label>
+            <div class="row" style="margin: 0">
+              <label><input id="skipIntro" type="checkbox" /> Skip intro</label>
+              <label><input id="introOnly" type="checkbox" /> Intro only</label>
+            </div>
+          </div>
+          <div>
+            <label>Transcription language</label>
+            <select id="lang">
+              <option value="ja">Japanese (ja)</option>
+              <option value="en">English (en)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row">
+          <div style="flex: 2">
+            <label>Lesson JSON</label>
+            <textarea id="lesson" rows="18"></textarea>
+            <div class="row" style="margin-top: 8px">
+              <button id="loadSample">Load Sample</button>
+              <button id="formatJson">Format JSON</button>
+            </div>
+          </div>
+          <div style="flex: 1">
+            <label>Controls</label>
+            <div class="row" style="margin: 0">
+              <button id="connect">Connect Mic</button>
+              <button id="start" disabled>Start Lesson</button>
+              <button id="stop" disabled>Stop</button>
+            </div>
+            <div class="row" style="margin-top: 10px">
+              <span class="pill" id="status">status: idle</span>
+              <span class="pill" id="armed">mic: disarmed</span>
+              <span class="pill" id="speak">tts: idle</span>
+            </div>
+          </div>
+        </div>
+
+        <h3 style="margin: 16px 0 8px">Console</h3>
+        <div id="log" class="log"></div>
+        <p class="muted" style="margin-top: 8px">
+          Tip: If you don’t hear audio, ensure the page has speaker permission
+          and the tab is active.
+        </p>
+      </div>
+    </div>
+
+    <script type="module">
+      // NOTE: We’ll load the SDK from esm.run to avoid bundlers.
+      import {
+        RealtimeAgent,
+        RealtimeSession,
+      } from "https://esm.run/@openai/agents-realtime";
+
+      // ------------- UI helpers -------------
+      const $ = (s) => document.querySelector(s);
+      const statusEl = $("#status"),
+        armedEl = $("#armed"),
+        speakEl = $("#speak"),
+        logEl = $("#log");
+      const log = (...a) => {
+        logEl.textContent +=
+          a
+            .map((x) => (typeof x === "string" ? x : JSON.stringify(x)))
+            .join(" ") + "\\n";
+        logEl.scrollTop = logEl.scrollHeight;
+      };
+
+      // ------------- Realtime glue (no shared modules) -------------
+      let session = null;
+      let responseInFlight = false;
+      let agentSpeaking = false;
+      let realtimeArmed = false;
+      const listeners = new Set();
+
+      function setArmed(on) {
+        realtimeArmed = on;
+        if (!session) return;
+        session.transport.sendEvent({
+          type: "session.update",
+          session: {
+            turn_detection: {
+              type: "semantic_vad",
+              eagerness: "high",
+              create_response: on,
+              interrupt_response: true,
+            },
+          },
+        });
+        armedEl.textContent = on ? "mic: ARMED" : "mic: disarmed";
+        log(on ? "[RTC] ARMED" : "[RTC] DISARMED");
+      }
+
+      function onEvent(cb) {
+        listeners.add(cb);
+      }
+      function offEvent(cb) {
+        listeners.delete(cb);
+      }
+
+      async function connectRealtime() {
+        if (session) return;
+
+        // Get ephemeral token from our tiny server
+        const lang = $("#lang").value;
+        const tokResp = await fetch("/realtime/token", { method: "POST" });
+        if (!tokResp.ok) throw new Error(await tokResp.text());
+        const tok = await tokResp.json(); // { value: "ek_..." }
+        const ek = tok.value;
+
+        // Ask the browser for mic access early so the UX is clear
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        // Build agent + session — in the browser this uses WebRTC automatically
+        const agent = new RealtimeAgent({
+          name: "Instructor",
+          instructions: "",
+        });
+        session = new RealtimeSession(agent, {
+          // (browser) default transport is WebRTC; no extra config needed here
+        });
+
+        // Wire generic event stream (mirrors your Node client)
+        session.on("event", (ev) => {
+          if (ev?.type === "response.created") {
+            agentSpeaking = true;
+            responseInFlight = true;
+            speakEl.textContent = "tts: speaking";
+          }
+          if (
+            ev?.type === "response.completed" ||
+            ev?.type === "response.failed" ||
+            ev?.type === "response.canceled"
+          ) {
+            agentSpeaking = false;
+            responseInFlight = false;
+            speakEl.textContent = "tts: idle";
+          }
+          // Pass through to "unit" listeners
+          listeners.forEach((cb) => {
+            try {
+              cb(ev);
+            } catch {}
+          });
+        });
+
+        await session.connect({ apiKey: ek }); // <- ephemeral client key
+
+        // Initial session settings (ASR on, speaking off)
+        session.transport.sendEvent({
+          type: "session.update",
+          session: {
+            voice: window.INTERVIEW_VOICE || "alloy",
+            input_audio_transcription: {
+              model: "gpt-4o-mini-transcribe",
+              language: lang,
+            },
+            turn_detection: {
+              type: "semantic_vad",
+              eagerness: "high",
+              create_response: false,
+              interrupt_response: true,
+            },
+          },
+        });
+
+        statusEl.textContent = "status: connected";
+        log("Connected to Realtime via WebRTC.");
+      }
+
+      function updateInstructions(text, voice) {
+        if (!session) return;
+        session.transport.sendEvent({
+          type: "session.update",
+          session: {
+            ...(text ? { instructions: text } : {}),
+            ...(voice ? { voice } : {}),
+          },
+        });
+      }
+
+      function speakOnce(instructions) {
+        if (!session) return;
+        session.transport.sendEvent({
+          type: "response.create",
+          response: {
+            modalities: ["audio", "text"],
+            ...(instructions ? { instructions } : {}),
+          },
+        });
+      }
+
+      function waitForResponseDone(timeoutMs = 15000) {
+        if (!responseInFlight) return Promise.resolve();
+        return new Promise((resolve) => {
+          let done = false;
+          const timer = setTimeout(() => {
+            if (!done) {
+              done = true;
+              offEvent(handler);
+              resolve();
+            }
+          }, timeoutMs);
+          const handler = (ev) => {
+            if (
+              ev?.type === "response.completed" ||
+              ev?.type === "response.failed" ||
+              ev?.type === "response.canceled"
+            ) {
+              if (done) return;
+              done = true;
+              clearTimeout(timer);
+              offEvent(handler);
+              resolve();
+            }
+          };
+          onEvent(handler);
+        });
+      }
+
+      async function speakOnceAndWait(text) {
+        speakOnce(text);
+        responseInFlight = true;
+        await waitForResponseDone();
+      }
+
+      function waitForUserSpeech({ timeoutMs = 7000 } = {}) {
+        return new Promise((resolve) => {
+          let done = false;
+          const finish = (txt) => {
+            if (done) return;
+            done = true;
+            offEvent(handler);
+            setArmed(false);
+            resolve(txt);
+          };
+          const timer = setTimeout(() => finish(null), timeoutMs);
+          const handler = (ev) => {
+            if (
+              ev?.type === "input_audio_transcription.completed" &&
+              ev?.transcript
+            ) {
+              clearTimeout(timer);
+              finish(String(ev.transcript));
+            }
+          };
+          onEvent(handler);
+          setArmed(true); // arm only during the listen window
+        });
+      }
+
+      // ------------- Orchestrator (from scratch, compact) -------------
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      function prettyFocus(lesson) {
+        const raw = String(lesson?.lesson?.focus || "")
+          .trim()
+          .toLowerCase();
+        const map = {
+          intro: "polite phone introductions (keigo)",
+          keigo: "polite Japanese (keigo)",
+          calls: "keigo for customer calls",
+        };
+        if (map[raw]) return map[raw];
+        if (raw)
+          return raw
+            .replace(/[_-]+/g, " ")
+            .replace(/\b\w/g, (c) => c.toUpperCase());
+        const notes = (lesson?.lesson?.notes || "").trim();
+        return notes || "today’s objectives";
+      }
+
+      async function runKickoff(lesson, durs) {
+        updateInstructions(
+          [
+            "ROLE: Polite Japanese instructor for telephone keigo.",
+            "SYSTEM: Kickoff is a scripted monologue.",
+            "- Do NOT ask questions.",
+            "- Speak only when a response is created.",
+            "Keep each utterance under 8 seconds.",
+          ].join("\\n")
+        );
+        const mins = (ms) => Math.round(ms / 60000);
+        const line = [
+          "Hello and welcome to today's lesson.",
+          `Our focus is ${prettyFocus(lesson)}.`,
+          `We'll spend about ${mins(durs.vocabMs)} minutes on vocabulary,`,
+          `${mins(durs.speakingMs)} on speaking practice,`,
+          `and ${mins(durs.conversationMs)} on a short conversation.`,
+          "Let's begin shortly.",
+        ].join(" ");
+        await speakOnceAndWait(
+          `Speak exactly this line and nothing else: "${line}"`
+        );
+        await sleep(300);
+      }
+
+      async function runVocab(lesson, unit, until) {
+        updateInstructions(
+          [
+            "ROLE: Instructor for Japanese telephone keigo.",
+            "INSTRUCTOR_LANGUAGE: English only for explanations and prompts.",
+            "TARGET_LANGUAGE: Use Japanese only for the target term/phrase itself and provided JP example lines.",
+            "CONSTRAINTS:",
+            "- Keep each instructor turn under 8 seconds.",
+            "- Do not invent new content; use only the unit data.",
+            "- Do not move to the next section on your own.",
+          ].join("\\n")
+        );
+        const items = unit.items || [];
+        let i = 0;
+        while (Date.now() < until) {
+          const it = items[i];
+          if (!it) {
+            await speakOnceAndWait("No vocabulary provided for this section.");
+            break;
+          }
+          await speakOnceAndWait(`Vocabulary: "${it.jp}" means "${it.en}".`);
+          await sleep(120);
+          await speakOnceAndWait(`Please repeat: "${it.jp}".`);
+          const heard = await waitForUserSpeech({ timeoutMs: 6500 });
+          log("[vocab] user said:", heard);
+          if (it.example_jp) {
+            await speakOnceAndWait(it.example_jp);
+          }
+          await sleep(200);
+          i = (i + 1) % Math.max(1, items.length);
+        }
+      }
+
+      async function runSpeaking(lesson, unit, until) {
+        updateInstructions(
+          [
+            "ROLE: Instructor for Japanese telephone keigo.",
+            "INSTRUCTOR_LANGUAGE: English only; target line in Japanese.",
+            "CONSTRAINTS: Keep each turn under 8s. Do not add new content.",
+          ].join("\\n")
+        );
+        await speakOnceAndWait(
+          "Speaking practice. I will name a phrase in Japanese with a quick English gloss, then please say it."
+        );
+        await sleep(150);
+        const items = unit.items || [];
+        if (!items.length) {
+          await speakOnceAndWait("No phrases provided for speaking.");
+          return;
+        }
+        let i = 0;
+        while (Date.now() < until) {
+          const it = items[i];
+          await speakOnceAndWait(
+            `"${it.jp}" means "${it.en}". Please say: "${it.jp}".`
+          );
+          const heard = await waitForUserSpeech({ timeoutMs: 7000 });
+          log("[speaking] user said:", heard);
+          await sleep(350);
+          i = (i + 1) % items.length;
+        }
+      }
+
+      async function runConversation(lesson, unit, until) {
+        updateInstructions(
+          [
+            "ROLE: Instructor for Japanese telephone keigo.",
+            "FLOW: Scripted role-play. Read only lines where speaker=bot (in JP).",
+            "After each bot line, wait briefly for the user.",
+            "If silence: one short English hint, then repeat once.",
+          ].join("\\n")
+        );
+        const turns = unit.turns || [];
+        if (!turns.length) {
+          await speakOnceAndWait("No conversation provided.");
+          return;
+        }
+        let idx = 0;
+        while (Date.now() < until) {
+          const t = turns[idx];
+          if (!t) break;
+          if (String(t.speaker).toLowerCase() === "bot") {
+            await speakOnceAndWait(String(t.jp));
+            const heard = await waitForUserSpeech({ timeoutMs: 5000 });
+            if (!heard) {
+              await speakOnceAndWait(
+                "Hint: respond briefly in Japanese. Repeating."
+              );
+              await speakOnceAndWait(String(t.jp));
+              await waitForUserSpeech({ timeoutMs: 4000 });
+            }
+          } else {
+            await speakOnceAndWait(`Your turn. Please say: "${t.jp}"`);
+            await waitForUserSpeech({ timeoutMs: 6000 });
+          }
+          idx = (idx + 1) % turns.length;
+        }
+      }
+
+      async function runLesson(lesson, opts, abortCtrl) {
+        const durations = {
+          vocabMs: (opts.vocabS ?? 60) * 1000,
+          speakingMs: (opts.speakingS ?? 60) * 1000,
+          conversationMs: (opts.conversationS ?? 60) * 1000,
+          wrapMs: 6000,
+        };
+
+        if (!opts.skipIntro) {
+          await runKickoff(lesson, durations);
+          if (opts.introOnly) return;
+        } else {
+          log("[orchestrator] SKIP_INTRO=true → jumping straight to units");
+        }
+
+        // Units
+        const plan = [
+          {
+            kind: "vocab",
+            unit: (lesson.units || []).find((u) => u.type === "vocab"),
+            until: Date.now() + durations.vocabMs,
+          },
+          {
+            kind: "speaking",
+            unit: (lesson.units || []).find((u) => u.type === "speaking"),
+            until: Date.now() + durations.speakingMs,
+          },
+          {
+            kind: "conversation",
+            unit: (lesson.units || []).find((u) => u.type === "conversation"),
+            until: Date.now() + durations.conversationMs,
+          },
+        ];
+
+        for (const step of plan) {
+          if (!step.unit) continue;
+          log(`[unit] ${step.kind} start`);
+          if (step.kind === "vocab")
+            await runVocab(lesson, step.unit, step.until);
+          if (step.kind === "speaking")
+            await runSpeaking(lesson, step.unit, step.until);
+          if (step.kind === "conversation")
+            await runConversation(lesson, step.unit, step.until);
+          log(`[unit] ${step.kind} end`);
+          await sleep(200);
+        }
+
+        // Wrap
+        updateInstructions("Keep it short and polite.");
+        await speakOnceAndWait(
+          "Great work today. This concludes our mini lesson. See you next time."
+        );
+        await sleep(durations.wrapMs);
+      }
+
+      // ------------- UI -------------
+      const aborter = { ctrl: null };
+
+      function setRunning(on) {
+        $("#start").disabled = on ? true : !window.__connected;
+        $("#stop").disabled = !on;
+        $("#connect").disabled = on;
+        statusEl.textContent = on
+          ? "status: running"
+          : window.__connected
+          ? "status: ready"
+          : "status: idle";
+      }
+
+      function loadSample() {
+        const sample = {
+          lesson: {
+            level: "beginner",
+            focus: "keigo",
+            notes: "Polite phone intros and support lines.",
+          },
+          units: [
+            {
+              type: "vocab",
+              items: [
+                {
+                  jp: "お世話になっております",
+                  en: "Thank you for your continued support",
+                  example_jp: "いつもお世話になっております。",
+                },
+                {
+                  jp: "少々お待ちください",
+                  en: "Please wait a moment",
+                  example_jp: "少々お待ちくださいませ。",
+                },
+                {
+                  jp: "恐れ入りますが",
+                  en: "Excuse me, but / I’m afraid",
+                  example_jp: "恐れ入りますが、お名前を頂戴できますか。",
+                },
+              ],
+            },
+            {
+              type: "speaking",
+              items: [
+                {
+                  jp: "いつもお世話になっております",
+                  en: "Thank you as always for your support",
+                },
+                { jp: "今お時間よろしいでしょうか", en: "Is now a good time?" },
+              ],
+            },
+            {
+              type: "conversation",
+              turns: [
+                {
+                  speaker: "bot",
+                  jp: "お電話ありがとうございます。株式会社リトルモンスターでございます。",
+                },
+                {
+                  speaker: "user",
+                  jp: "○○と申します。いつもお世話になっております。",
+                },
+                {
+                  speaker: "bot",
+                  jp: "恐れ入りますが、ご用件をお伺いしてもよろしいでしょうか。",
+                },
+                { speaker: "user", jp: "少々確認したい点がございます。" },
+              ],
+            },
+          ],
+        };
+        $("#lesson").value = JSON.stringify(sample, null, 2);
+      }
+
+      $("#loadSample").addEventListener("click", loadSample);
+      $("#formatJson").addEventListener("click", () => {
+        try {
+          const obj = JSON.parse($("#lesson").value);
+          $("#lesson").value = JSON.stringify(obj, null, 2);
+        } catch {
+          alert("Invalid JSON");
+        }
+      });
+
+      $("#connect").addEventListener("click", async () => {
+        try {
+          await connectRealtime();
+          window.__connected = true;
+          setRunning(false);
+          log("Mic ready, ASR configured.");
+        } catch (e) {
+          log("Connect failed:", e?.message || e);
+          alert("Connect failed. See console.");
+        }
+      });
+
+      $("#start").addEventListener("click", async () => {
+        let lesson;
+        try {
+          lesson = JSON.parse($("#lesson").value);
+        } catch {
+          alert("Invalid lesson JSON");
+          return;
+        }
+
+        const opts = {
+          vocabS: Number($("#vocabS").value || 60),
+          speakingS: Number($("#speakS").value || 60),
+          conversationS: Number($("#convS").value || 60),
+          skipIntro: $("#skipIntro").checked,
+          introOnly: $("#introOnly").checked,
+        };
+        if (opts.skipIntro && opts.introOnly) opts.introOnly = false;
+
+        aborter.ctrl = new AbortController();
+        logEl.textContent = "";
+        setRunning(true);
+        log("== START LESSON ==");
+
+        try {
+          await runLesson(lesson, opts, aborter.ctrl);
+          log("== LESSON COMPLETE ==");
+        } catch (e) {
+          log("Runner error:", e?.message || e);
+        } finally {
+          setRunning(false);
+        }
+      });
+
+      $("#stop").addEventListener("click", () => {
+        aborter.ctrl?.abort();
+        setArmed(false);
+        setRunning(false);
+        log("== STOPPED BY USER ==");
+      });
+
+      // Boot
+      window.addEventListener("load", () => {
+        loadSample();
+        statusEl.textContent = "status: idle";
+        armedEl.textContent = "mic: disarmed";
+        speakEl.textContent = "tts: idle";
+      });
+    </script>
+  </body>
+</html>
