@@ -145,7 +145,18 @@
           <div style="flex: 2">
             <label>Lesson JSON</label>
             <textarea id="lesson" rows="18"></textarea>
+
             <div class="row" style="margin-top: 8px">
+              <input
+                id="lessonId"
+                type="text"
+                placeholder="lesson ID or full API URL"
+                value="fTjHCJKiiEVYSWSlJN8hc"
+              />
+            </div>
+
+            <div class="row" style="margin-top: 8px">
+              <button id="loadFromApi">Load from API</button>
               <button id="loadSample">Load Sample</button>
               <button id="formatJson">Format JSON</button>
             </div>
@@ -180,6 +191,7 @@
         createTransport,
         attachPcDebugHandlers,
       } from "/js/webrtc.js";
+      import { fetchLessonById } from "/js/lessons/loader.js";
       import { createRealtimeApi } from "/js/realtime.js";
       import { makeRunVocab } from "/js/lessons/vocab.js";
       import { makeRunSpeaking } from "/js/lessons/speaking.js";
@@ -413,6 +425,23 @@
           $("#lesson").value = JSON.stringify(obj, null, 2);
         } catch {
           alert("Invalid JSON");
+        }
+      });
+
+      $("#loadFromApi").addEventListener("click", async () => {
+        const raw = ($("#lessonId").value || "").trim();
+        if (!raw) {
+          alert("Enter a lesson ID or full API URL.");
+          return;
+        }
+        try {
+          log(`Fetching lesson from API: ${raw}`);
+          const normalized = await fetchLessonById(raw, {});
+          $("#lesson").value = JSON.stringify(normalized, null, 2);
+          log("Loaded and normalized lesson JSON into editor.");
+        } catch (e) {
+          log("API load failed:", e?.message || e);
+          alert("API load failed. See console/log for details.");
         }
       });
 
