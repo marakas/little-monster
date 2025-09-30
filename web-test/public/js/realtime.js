@@ -16,6 +16,7 @@ export function createRealtimeApi({
   let responseInFlight = false;
   let agentSpeaking = false;
   const listeners = new Set();
+  let baseInstructionsCurrent = "";
 
   function onEvent(cb) {
     listeners.add(cb);
@@ -35,6 +36,7 @@ export function createRealtimeApi({
 
     const agent = new RealtimeAgent({ name: "Instructor", instructions: "" });
     session = new RealtimeSession(agent, { transport });
+    baseInstructionsCurrent = baseInstructions || "";
 
     // ---- Events (unchanged logic) ----
     session.on("event", (ev) => {
@@ -118,11 +120,12 @@ export function createRealtimeApi({
 
   function updateInstructions(text, voice) {
     if (!session) return;
+    const final = [baseInstructionsCurrent, text || ""].join("\n\n").trim();
     session.transport.sendEvent({
       type: "session.update",
       session: {
         type: "realtime",
-        instructions: text,
+        instructions: final,
         ...(voice ? { voice } : {}),
       },
     });
@@ -130,7 +133,9 @@ export function createRealtimeApi({
 
   function speakOnce(instructions) {
     if (!session) return;
-    const final = instructions;
+    const final = [baseInstructionsCurrent, instructions || ""]
+      .join("\n\n")
+      .trim();
     session.transport.sendEvent({
       type: "session.update",
       session: { type: "realtime", instructions: final },
